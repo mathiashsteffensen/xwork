@@ -3,6 +3,7 @@ package storage_adapters
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -82,7 +83,8 @@ func (s SQLStorageAdapter) Initialize() error {
 				retry_count INT DEFAULT 0,
 				started_at TIMESTAMP NOT NULL,
 				enqueued_at TIMESTAMP NOT NULL,
-				scheduled_at TIMESTAMP NOT NULL
+				scheduled_at TIMESTAMP NOT NULL,
+				last_heartbeat_at TIMESTAMP NOT NULL
 		)`,
 	)
 	if err != nil {
@@ -147,9 +149,14 @@ func (s SQLStorageAdapter) Initialize() error {
 }
 
 func insertToScheduled(db QueryObject, job *xwork.ScheduledJob) error {
-	_, err := db.Exec(
+	payload, err := job.Payload.Value()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(
 		"INSERT INTO xwork_schedule (id, name, queue, payload, enqueue_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6)",
-		job.ID, job.Name, job.Queue, job.Payload, job.EnqueueAt, job.ScheduledAt,
+		job.ID, job.Name, job.Queue, payload, job.EnqueueAt, job.ScheduledAt,
 	)
 	return err
 }
@@ -158,8 +165,7 @@ func nextFromScheduled(db QueryObject) ([]*xwork.ScheduledJob, error) {
 	rows, err := db.Query(
 		`SELECT id, name, queue, payload, enqueue_at, scheduled_at
 			FROM xwork_schedule
-			WHERE enqueue_at <= $1
-			FOR UPDATE`,
+			WHERE enqueue_at <= $1`,
 		time.Now(),
 	)
 	if err != nil {
@@ -189,17 +195,54 @@ func deleteFromScheduled(db QueryObject, id uuid.UUID) error {
 	return err
 }
 
+func listScheduled(db QueryObject, limit, offset uint) ([]*xwork.ScheduledJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := db.Query(
+		`SELECT id, name, queue, payload, enqueue_at, scheduled_at
+			FROM xwork_schedule
+			ORDER BY enqueue_at DESC LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*xwork.ScheduledJob, 0, limit)
+	for rows.Next() {
+		job := &xwork.ScheduledJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.EnqueueAt, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 func insertToQueue(db QueryObject, job *xwork.EnqueuedJob) error {
-	_, err := db.Exec(
+	payload, err := job.Payload.Value()
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(
 		"INSERT INTO xwork_queue (id, name, queue, payload, retry_count, enqueued_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-		job.ID, job.Name, job.Queue, job.Payload, job.RetryCount, job.EnqueuedAt, job.ScheduledAt,
+		job.ID, job.Name, job.Queue, payload, job.RetryCount, job.EnqueuedAt, job.ScheduledAt,
 	)
 	return err
 }
 
 func getFromQueue(db QueryObject, queue string) (*xwork.EnqueuedJob, error) {
 	row := db.QueryRow(
-		"SELECT id, name, queue, payload, retry_count, enqueued_at, scheduled_at FROM xwork_queue WHERE queue = $1 ORDER BY enqueued_at ASC LIMIT 1 FOR UPDATE",
+		"SELECT id, name, queue, payload, retry_count, enqueued_at, scheduled_at FROM xwork_queue WHERE queue = $1 ORDER BY enqueued_at ASC LIMIT 1",
 		queue,
 	)
 
@@ -224,13 +267,80 @@ func deleteFromQueue(db QueryObject, id uuid.UUID) error {
 	return err
 }
 
+func listEnqueued(db QueryObject, queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := db.Query(
+		`SELECT id, name, queue, payload, retry_count, enqueued_at, scheduled_at
+			FROM xwork_queue
+			WHERE queue = $1
+			ORDER BY enqueued_at ASC LIMIT $2 OFFSET $3`,
+		queue, limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*xwork.EnqueuedJob, 0, limit)
+	for rows.Next() {
+		job := &xwork.EnqueuedJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.EnqueuedAt, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 func insertToProcessing(db QueryObject, job *xwork.ProcessingJob) error {
-	_, err := db.Exec(
-		"INSERT INTO xwork_processing (id, name, queue, payload, retry_count, started_at, enqueued_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-		job.ID, job.Name, job.Queue, job.Payload, job.RetryCount, job.StartedAt, job.EnqueuedAt, job.ScheduledAt,
+	payload, err := job.Payload.Value()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(
+		"INSERT INTO xwork_processing (id, name, queue, payload, retry_count, started_at, enqueued_at, scheduled_at, last_heartbeat_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+		job.ID, job.Name, job.Queue, payload, job.RetryCount, job.StartedAt, job.EnqueuedAt, job.ScheduledAt, job.StartedAt,
 	)
 	return err
 
+}
+
+func emitHeartbeat(db QueryObject, job *xwork.ProcessingJob) error {
+	_, err := db.Exec("UPDATE xwork_processing SET last_heartbeat_at = $1 WHERE id = $2", time.Now(), job.ID)
+	return err
+}
+
+func getByLastHeartbeatBefore(db QueryObject, lastHeartbeatBefore time.Time) ([]*xwork.ProcessingJob, error) {
+	rows, err := db.Query(
+		"SELECT id, name, queue, payload, retry_count, started_at, enqueued_at, scheduled_at FROM xwork_processing WHERE last_heartbeat_at < $1",
+		lastHeartbeatBefore,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := make([]*xwork.ProcessingJob, 0)
+	for rows.Next() {
+		job := &xwork.ProcessingJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.StartedAt, &job.EnqueuedAt, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
 }
 
 func deleteFromProcessing(db QueryObject, id uuid.UUID) error {
@@ -241,18 +351,94 @@ func deleteFromProcessing(db QueryObject, id uuid.UUID) error {
 	return err
 }
 
+func listProcessing(db QueryObject, limit, offset uint) ([]*xwork.ProcessingJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := db.Query(
+		`SELECT id, name, queue, payload, retry_count, started_at, enqueued_at, scheduled_at
+			FROM xwork_processing
+			ORDER BY enqueued_at DESC LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*xwork.ProcessingJob, 0, limit)
+	for rows.Next() {
+		job := &xwork.ProcessingJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.StartedAt, &job.EnqueuedAt, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 func insertToProcessed(db QueryObject, job *xwork.ProcessedJob) error {
-	_, err := db.Exec(
+	payload, err := job.Payload.Value()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(
 		"INSERT INTO xwork_processed (id, name, queue, payload, started_at, completed_at, enqueued_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-		job.ID, job.Name, job.Queue, job.Payload, job.StartedAt, job.CompletedAt, job.EnqueuedAt, job.ScheduledAt,
+		job.ID, job.Name, job.Queue, payload, job.StartedAt, job.CompletedAt, job.EnqueuedAt, job.ScheduledAt,
 	)
 	return err
 }
 
+func listProcessed(db QueryObject, limit, offset uint) ([]*xwork.ProcessedJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := db.Query(
+		`SELECT id, name, queue, payload, started_at, completed_at, enqueued_at, scheduled_at
+			FROM xwork_processed
+			ORDER BY enqueued_at ASC LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*xwork.ProcessedJob, 0, limit)
+	for rows.Next() {
+		job := &xwork.ProcessedJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.StartedAt, &job.CompletedAt, &job.EnqueuedAt, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 func insertToFailed(db QueryObject, job *xwork.FailedJob) error {
-	_, err := db.Exec(
+	payload, err := job.Payload.Value()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(
 		"INSERT INTO xwork_failed (id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-		job.ID, job.Name, job.Queue, job.Payload, job.Error, job.LastRetryAt, job.NextRetryAt, job.RetryCount, job.ScheduledAt,
+		job.ID, job.Name, job.Queue, payload, job.Error, job.LastRetryAt, job.NextRetryAt, job.RetryCount, job.ScheduledAt,
 	)
 	return err
 }
@@ -261,8 +447,7 @@ func nextFromFailed(db QueryObject) ([]*xwork.FailedJob, error) {
 	rows, err := db.Query(
 		`SELECT id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at
 			FROM xwork_failed
-			WHERE next_retry_at <= $1
-			FOR UPDATE`,
+			WHERE next_retry_at <= $1`,
 		time.Now(),
 	)
 	if err != nil {
@@ -293,6 +478,60 @@ func deleteFromFailed(db QueryObject, id uuid.UUID) error {
 	return err
 }
 
+func listFailed(db QueryObject, limit, offset uint) ([]*xwork.FailedJob, error) {
+	rows, err := db.Query(
+		`SELECT id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at
+			FROM xwork_failed
+			ORDER BY next_retry_at DESC LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*xwork.FailedJob, 0, limit)
+	for rows.Next() {
+		job := &xwork.FailedJob{}
+		err = rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.Error, &job.LastRetryAt, &job.NextRetryAt, &job.RetryCount, &job.ScheduledAt)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+
+}
+
+func count(db QueryObject, jobType xwork.JobType) (int64, error) {
+	var tableName string
+	switch jobType {
+	case xwork.JobTypeScheduled:
+		tableName = "xwork_schedule"
+	case xwork.JobTypeEnqueued:
+		tableName = "xwork_queue"
+	case xwork.JobTypeProcessing:
+		tableName = "xwork_processing"
+	case xwork.JobTypeProcessed:
+		tableName = "xwork_processed"
+	case xwork.JobTypeFailed:
+		tableName = "xwork_failed"
+	default:
+		return 0, errors.New("unknown job type")
+	}
+
+	var count int64
+
+	row := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName))
+	err := row.Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s SQLStorageAdapter) Transact(f func(adapter xwork.StorageAdapter) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -320,6 +559,10 @@ func (s SQLStorageAdapter) DeleteFromScheduled(id uuid.UUID) error {
 	return deleteFromScheduled(s.q, id)
 }
 
+func (s SQLStorageAdapter) ListScheduled(limit, offset uint) ([]*xwork.ScheduledJob, error) {
+	return listScheduled(s.q, limit, offset)
+}
+
 func (s SQLStorageAdapter) InsertToQueue(job *xwork.EnqueuedJob) error {
 	return insertToQueue(s.q, job)
 }
@@ -332,16 +575,36 @@ func (s SQLStorageAdapter) DeleteFromQueue(id uuid.UUID) error {
 	return deleteFromQueue(s.q, id)
 }
 
+func (s SQLStorageAdapter) ListEnqueued(queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {
+	return listEnqueued(s.q, queue, limit, offset)
+}
+
 func (s SQLStorageAdapter) InsertToProcessing(job *xwork.ProcessingJob) error {
 	return insertToProcessing(s.q, job)
+}
+
+func (s SQLStorageAdapter) EmitHeartbeat(job *xwork.ProcessingJob) error {
+	return emitHeartbeat(s.q, job)
+}
+
+func (s SQLStorageAdapter) GetByLastHeartbeatBefore(timestamp time.Time) ([]*xwork.ProcessingJob, error) {
+	return getByLastHeartbeatBefore(s.q, timestamp)
 }
 
 func (s SQLStorageAdapter) DeleteFromProcessing(id uuid.UUID) error {
 	return deleteFromProcessing(s.q, id)
 }
 
+func (s SQLStorageAdapter) ListProcessing(limit, offset uint) ([]*xwork.ProcessingJob, error) {
+	return listProcessing(s.q, limit, offset)
+}
+
 func (s SQLStorageAdapter) InsertToProcessed(job *xwork.ProcessedJob) error {
 	return insertToProcessed(s.q, job)
+}
+
+func (s SQLStorageAdapter) ListProcessed(limit, offset uint) ([]*xwork.ProcessedJob, error) {
+	return listProcessed(s.q, limit, offset)
 }
 
 func (s SQLStorageAdapter) InsertToFailed(job *xwork.FailedJob) error {
@@ -354,4 +617,12 @@ func (s SQLStorageAdapter) NextFromFailed() ([]*xwork.FailedJob, error) {
 
 func (s SQLStorageAdapter) DeleteFromFailed(id uuid.UUID) error {
 	return deleteFromFailed(s.q, id)
+}
+
+func (s SQLStorageAdapter) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
+	return listFailed(s.q, limit, offset)
+}
+
+func (s SQLStorageAdapter) Count(jobType xwork.JobType) (int64, error) {
+	return count(s.q, jobType)
 }

@@ -1,142 +1,323 @@
 package xwork
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
-	"os/signal"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/alitto/pond"
+	"github.com/gofrs/uuid"
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	logger logrus.FieldLogger = logrus.New().WithField("package", "xwork")
+const (
+	DefaultConcurrency = 5
+	DefaultQueue       = "default"
+)
+
+type Processor struct {
+	/* Configurable values */
+	logger      logrus.FieldLogger
+	storage     StorageAdapter
+	concurrency int
+	killTimeout time.Duration
+
+	/* Internal values */
+	registeredQueues []string
+	jobDefinitions   JobDefinitions
 
 	pool *pond.WorkerPool
 
 	// These are the jobs currently in memory in this process
 	// They are also stored in whatever StorageAdapter is being used,
 	// but we keep them in memory and try to push them back if they don't finish when the process is shutting down
-	processingJobs = NewAtomicMap[*Job]()
+	processingJobs AtomicMap[*Job]
 
-	quit                       = make(chan struct{})
-	numManagedGoRoutines int32 = 0
-)
-
-func SetLogger(fieldLogger logrus.FieldLogger) {
-	logger = fieldLogger
+	quit                 chan struct{}
+	numManagedGoRoutines int32
 }
 
-func Process(concurrency int, queues ...string) {
-	logger.
-		WithField("concurrency", concurrency).
+func NewProcessor(storage StorageAdapter) (*Processor, error) {
+	if s, ok := storage.(Initializer); ok {
+		err := s.Initialize()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &Processor{
+		logger:      logrus.New().WithField("package", "xwork"),
+		storage:     storage,
+		concurrency: DefaultConcurrency,
+		killTimeout: 15 * time.Second,
+
+		registeredQueues:     make([]string, 0),
+		jobDefinitions:       make(JobDefinitions),
+		processingJobs:       NewAtomicMap[*Job](),
+		quit:                 make(chan struct{}),
+		numManagedGoRoutines: 0,
+	}, nil
+}
+
+func (p *Processor) SetLogger(fieldLogger logrus.FieldLogger) {
+	p.logger = fieldLogger
+}
+
+func (p *Processor) SetConcurrency(concurrency int) {
+	p.concurrency = concurrency
+}
+
+func (p *Processor) SetKillTimeout(killTimeout time.Duration) {
+	p.killTimeout = killTimeout
+}
+
+func (p *Processor) DefineJob(queue string, name string, handler JobHandler) *JobDefinition {
+	def := &JobDefinition{
+		Name:      name,
+		Handler:   handler,
+		Queue:     queue,
+		processor: p,
+	}
+
+	var hasQueue bool
+	for _, registeredQueue := range p.registeredQueues {
+		if registeredQueue == queue {
+			hasQueue = true
+		}
+	}
+
+	if !hasQueue {
+		p.registeredQueues = append(p.registeredQueues, queue)
+	}
+
+	p.jobDefinitions.set(name, def)
+
+	return def
+}
+
+func (p *Processor) Enqueue(name string, payload JobPayload) error {
+	return p.EnqueueAt(name, time.Now(), payload)
+}
+
+func (p *Processor) EnqueueIn(name string, duration time.Duration, payload JobPayload) error {
+	return p.EnqueueAt(name, time.Now().Add(duration), payload)
+}
+
+func (p *Processor) EnqueueAt(name string, enqueueAt time.Time, payload JobPayload) error {
+	def := p.jobDefinitions.get(name)
+	if def == nil {
+		return errors.New("job definition not found")
+	}
+
+	id, err := uuid.NewV4()
+	if err != nil {
+		return err
+	}
+
+	p.logger.Infof("Enqueueing job '%s:%s' at %s", def.Queue, def.Name, enqueueAt)
+
+	return p.enqueue(&ScheduledJob{
+		ID:          id,
+		Name:        def.Name,
+		Queue:       def.Queue,
+		EnqueueAt:   enqueueAt,
+		ScheduledAt: time.Now(),
+		Payload:     payload,
+	})
+}
+
+func (p *Processor) Process(queues ...string) {
+	if len(queues) == 0 {
+		queues = p.registeredQueues
+	}
+
+	if len(queues) == 0 {
+		queues = []string{DefaultQueue}
+	}
+
+	p.logger.
+		WithField("concurrency", p.concurrency).
 		WithField("queues", strings.Join(queues, ", ")).
 		Info("Starting background work processor")
 
-	pool = pond.New(concurrency, 0)
+	p.pool = pond.New(p.concurrency, 0)
 
-	go enqueueScheduledJobs(quit)
-	go requeueFailedJobs(quit)
+	go p.enqueueScheduledJobs()
+	go p.requeueFailedJobs()
+	go p.emitHeartbeats()
+	go p.checkForOrphanedJobs()
 
-	atomic.AddInt32(&numManagedGoRoutines, 2)
+	atomic.AddInt32(&p.numManagedGoRoutines, 4)
 
 	for _, queue := range queues {
-		go processQueue(pool, queue, quit)
-		atomic.AddInt32(&numManagedGoRoutines, 1)
+		go p.processQueue(queue)
+		atomic.AddInt32(&p.numManagedGoRoutines, 1)
 	}
 
-	go WaitForShutdown()
+	p.WaitForShutdown()
 }
 
-func WaitForShutdown() {
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP, os.Interrupt, os.Kill)
-	<-sigc
-	Shutdown()
+func (p *Processor) WaitForShutdown() {
+	s := <-newShutdownChannel()
+	p.Shutdown(s)
 }
 
-func Shutdown() {
-	for i := 0; int32(i) < numManagedGoRoutines; i++ {
+const RequeueTimeout = time.Second
+
+func (p *Processor) Shutdown(signal os.Signal) {
+	p.logger.WithField("signal", signal).Warn("Shutting down background work processor")
+
+	for i := 0; int32(i) < p.numManagedGoRoutines+1; i++ {
 		// Gracefully shutdown all managed goroutines
-		quit <- struct{}{}
-		atomic.AddInt32(&numManagedGoRoutines, -1)
+		p.quit <- struct{}{}
 	}
 
-	pool.StopAndWaitFor(30 * time.Second)
+	atomic.StoreInt32(&p.numManagedGoRoutines, 0)
+
+	p.logger.WithField("timeout", p.killTimeout).Info("Allowing jobs to finish processing")
+	p.pool.StopAndWaitFor(p.killTimeout - RequeueTimeout)
 
 	// Try to reschedule jobs that didn't finish processing
-	processingJobs.Each(func(_ string, job *Job) {
-		logger.Warnf("Attempting to requeue interupted job %s", job.ID)
+	p.processingJobs.Each(func(_ string, job *Job) {
+		p.logger.Warnf("Attempting to requeue interrupted job %s", job.ID)
 
-		err := requeue(job)
+		err := p.requeue(job)
 		if err != nil {
-			logger.WithError(err).WithField("id", job.ID).WithField("payload", job.Payload).Error("failed to requeue job")
+			p.logger.WithError(err).WithField("id", job.ID).WithField("payload", job.Payload).Error("failed to requeue job")
 		}
 	})
 
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(RequeueTimeout)
 }
 
-func enqueueScheduledJobs(quit chan struct{}) {
-	logger.Debugf("Enqueueing scheduled jobs")
+const PollTickerTimeout = 10 * time.Millisecond
+const HeartbeatTickerTimeout = 3 * time.Second
 
-	ticker := time.NewTicker(10 * time.Millisecond)
+var ErrOrphanJob = errors.New("orphan job")
+
+func (p *Processor) checkForOrphanedJobs() {
+	p.logger.Debug("Checking for orphaned jobs")
+
+	ticker := time.NewTicker(PollTickerTimeout)
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				err := enqueueReadyScheduledJobs()
+				orphanedJobs, err := p.storage.GetByLastHeartbeatBefore(time.Now().Add(-HeartbeatTickerTimeout * 3))
 				if err != nil {
-					fmt.Printf("failed to enqueue scheduled jobs: %v\n", err)
-					continue
+					p.logger.WithError(err).Warn("Failed to get orphaned jobs")
 				}
-			case <-quit:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
 
-}
-
-func requeueFailedJobs(quit chan struct{}) {
-	logger.Debugf("Requeueing failed jobs")
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				err := enqueueReadyFailedJobs()
-				if err != nil {
-					fmt.Printf("failed to requeue failed jobs: %v\n", err)
-					continue
+				if len(orphanedJobs) > 0 {
+					jobIds := make([]string, len(orphanedJobs))
+					for i, job := range orphanedJobs {
+						jobIds[i] = job.ID.String()
+					}
+					p.logger.Debugf("Found orphaned jobs: %v", jobIds)
 				}
-			case <-quit:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
 
-func processQueue(pool *pond.WorkerPool, queue string, quit chan struct{}) {
-	logger.Infof("Processing queue %q", queue)
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				pool.Submit(func() {
-					job, err := dequeue(queue)
+				for _, job := range orphanedJobs {
+					err := p.fail(job, ErrOrphanJob)
 					if err != nil {
-						logger.WithError(err).Error("failed to dequeue job")
+						p.logger.WithError(err).WithField("job_id", job.ID).Warn("Failed to fail job")
+						return
+					}
+				}
+			case <-p.quit:
+				p.logger.Debug("Shutting down checking for orphaned jobs")
+				return
+			}
+		}
+	}()
+}
+
+func (p *Processor) emitHeartbeats() {
+	p.logger.Debug("Starting heartbeats emitter")
+
+	ticker := time.NewTicker(HeartbeatTickerTimeout)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.processingJobs.Each(func(_ string, job *Job) {
+					err := p.storage.EmitHeartbeat(job)
+					if err != nil {
+						p.logger.WithError(err).Error("failed to emit heartbeat")
+						return
+					}
+				})
+			case <-p.quit:
+				p.logger.Debug("Shutting down heartbeats emitter")
+				return
+			}
+		}
+	}()
+}
+
+func (p *Processor) enqueueScheduledJobs() {
+	p.logger.Debug("Enqueueing scheduled jobs")
+
+	ticker := time.NewTicker(PollTickerTimeout)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				err := p.enqueueReadyScheduledJobs()
+				if err != nil {
+					p.logger.WithError(err).Error("failed to enqueue scheduled jobs")
+					continue
+				}
+			case <-p.quit:
+				p.logger.Debug("Shutting down enqueueing scheduled jobs")
+				return
+			}
+		}
+	}()
+
+}
+
+func (p *Processor) requeueFailedJobs() {
+	p.logger.Debug("Requeueing failed jobs")
+
+	ticker := time.NewTicker(PollTickerTimeout)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				err := p.enqueueReadyFailedJobs()
+				if err != nil {
+					p.logger.WithError(err).Error("failed to requeue failed jobs")
+					continue
+				}
+			case <-p.quit:
+				p.logger.Debug("Shutting down requeueing failed jobs")
+				return
+			}
+		}
+	}()
+}
+
+func (p *Processor) processQueue(queue string) {
+	p.logger.Infof("Processing queue %q", queue)
+
+	ticker := time.NewTicker(PollTickerTimeout)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.pool.TrySubmit(func() {
+					job, err := p.dequeue(queue)
+					if err != nil {
+						p.logger.WithError(err).Error("failed to dequeue job")
 						return
 					}
 
@@ -144,42 +325,41 @@ func processQueue(pool *pond.WorkerPool, queue string, quit chan struct{}) {
 						return
 					}
 
-					processJob(job)
+					p.processJob(job)
 				})
-			case <-quit:
-				logger.Infof("Stopping queue %q", queue)
-				ticker.Stop()
+			case <-p.quit:
+				p.logger.Infof("Stopping queue %q", queue)
 				return
 			}
 		}
 	}()
 }
 
-func processJob(job *Job) error {
-	processingJobs.Set(job.ID.String(), job)
-	defer processingJobs.Delete(job.ID.String())
+func (p *Processor) processJob(job *Job) {
+	p.processingJobs.Set(job.ID.String(), job)
+	defer p.processingJobs.Delete(job.ID.String())
 
-	jobDefinition := jobDefinitions.get(job.Queue, job.Name)
+	jobDefinition := p.jobDefinitions.get(job.Name)
 
-	l := logger.WithFields(map[string]any{
+	l := p.logger.WithFields(map[string]any{
 		"id":    job.ID,
 		"queue": job.Queue,
 		"name":  job.Name,
 	})
 
-	l.Info("START")
-
-	start := time.Now()
-
 	defer func() {
 		if r := recover(); r != nil {
 			l.WithField("panic", r).Error("PANIC")
-			err := fail(job, fmt.Errorf("panic: %v", r))
+			err := p.fail(job, fmt.Errorf("panic: %v", r))
 			if err != nil {
 				l.WithError(err).Error("failed to send job to failed queue")
 			}
 		}
 	}()
+
+	l.Info("START")
+
+	start := time.Now()
 
 	err := jobDefinition.Handler(job)
 
@@ -188,28 +368,32 @@ func processJob(job *Job) error {
 	if err != nil {
 		l.WithError(err).Error("FAILED")
 
-		err = fail(job, err)
+		err = p.fail(job, err)
 		if err != nil {
 			l.WithError(err).Error("failed to send job to failed queue")
 		}
 
-		return err
+		return
 	}
 
 	l.Info("COMPLETED")
 
-	err = complete(job)
+	err = p.complete(job)
 	if err != nil {
 		l.WithError(err).Error("failed to complete job")
-		return err
-	}
 
-	return nil
+		err = p.fail(job, err)
+		if err != nil {
+			l.WithError(err).Error("failed to send job to failed queue")
+		}
+
+		return
+	}
 }
 
-func enqueue(job *ScheduledJob) error {
+func (p *Processor) enqueue(job *ScheduledJob) error {
 	if job.EnqueueAt.Before(time.Now()) {
-		return storage.InsertToQueue(&EnqueuedJob{
+		return p.storage.InsertToQueue(&EnqueuedJob{
 			ID:          job.ID,
 			Name:        job.Name,
 			Queue:       job.Queue,
@@ -217,17 +401,17 @@ func enqueue(job *ScheduledJob) error {
 			EnqueuedAt:  time.Now(),
 			ScheduledAt: job.ScheduledAt,
 		})
-	} else {
-		return storage.InsertToScheduled(job)
 	}
+
+	return p.storage.InsertToScheduled(job)
 }
 
-func dequeue(queue string) (*ProcessingJob, error) {
+func (p *Processor) dequeue(queue string) (*ProcessingJob, error) {
 	var job *ProcessingJob
-	err := storage.Transact(func(storage StorageAdapter) error {
+	err := p.storage.Transact(func(storage StorageAdapter) error {
 		enqueuedJob, err := storage.GetFromQueue(queue)
 		if err != nil {
-			logger.Debugf("failed to get job from queue %q: %v", queue, err)
+			p.logger.Debugf("failed to get job from queue %q: %v", queue, err)
 			return err
 		}
 
@@ -260,8 +444,8 @@ func dequeue(queue string) (*ProcessingJob, error) {
 	return job, nil
 }
 
-func complete(job *Job) error {
-	return storage.Transact(func(storage StorageAdapter) error {
+func (p *Processor) complete(job *Job) error {
+	return p.storage.Transact(func(storage StorageAdapter) error {
 		processedJob := &ProcessedJob{
 			ID:          job.ID,
 			Name:        job.Name,
@@ -282,8 +466,8 @@ func complete(job *Job) error {
 	})
 }
 
-func requeue(job *Job) error {
-	return storage.Transact(func(storage StorageAdapter) error {
+func (p *Processor) requeue(job *Job) error {
+	return p.storage.Transact(func(storage StorageAdapter) error {
 		err := storage.InsertToQueue(&EnqueuedJob{
 			ID:          job.ID,
 			Name:        job.Name,
@@ -300,8 +484,8 @@ func requeue(job *Job) error {
 	})
 }
 
-func fail(job *Job, jobErr error) error {
-	return storage.Transact(func(storage StorageAdapter) error {
+func (p *Processor) fail(job *Job, jobErr error) error {
+	return p.storage.Transact(func(storage StorageAdapter) error {
 		err := storage.DeleteFromProcessing(job.ID)
 		if err != nil {
 			return err
@@ -309,7 +493,7 @@ func fail(job *Job, jobErr error) error {
 
 		retryCount := job.RetryCount + 1
 
-		if retryCount > DEFAULT_MAX_RETRY_COUNT {
+		if retryCount > DefaultMaxRetryCount {
 			fmt.Printf(
 				"WARNING: Job(%s) of type %s:%s is being discarded after %d retries",
 				job.ID,
@@ -337,8 +521,8 @@ func fail(job *Job, jobErr error) error {
 	})
 }
 
-func retry(job *FailedJob) error {
-	return storage.Transact(func(storage StorageAdapter) error {
+func (p *Processor) retry(job *FailedJob) error {
+	return p.storage.Transact(func(storage StorageAdapter) error {
 		err := storage.DeleteFromFailed(job.ID)
 		if err != nil {
 			return err
@@ -356,14 +540,14 @@ func retry(job *FailedJob) error {
 	})
 }
 
-func enqueueReadyFailedJobs() error {
-	jobs, err := storage.NextFromFailed()
+func (p *Processor) enqueueReadyFailedJobs() error {
+	jobs, err := p.storage.NextFromFailed()
 	if err != nil {
 		return err
 	}
 
 	for _, job := range jobs {
-		err = retry(job)
+		err = p.retry(job)
 		if err != nil {
 			return err
 		}
@@ -372,8 +556,8 @@ func enqueueReadyFailedJobs() error {
 	return nil
 }
 
-func enqueueScheduled(job *ScheduledJob) error {
-	return storage.Transact(func(storage StorageAdapter) error {
+func (p *Processor) enqueueScheduled(job *ScheduledJob) error {
+	return p.storage.Transact(func(storage StorageAdapter) error {
 		err := storage.DeleteFromScheduled(job.ID)
 		if err != nil {
 			return err
@@ -390,14 +574,14 @@ func enqueueScheduled(job *ScheduledJob) error {
 	})
 }
 
-func enqueueReadyScheduledJobs() error {
-	jobs, err := storage.NextFromScheduled()
+func (p *Processor) enqueueReadyScheduledJobs() error {
+	jobs, err := p.storage.NextFromScheduled()
 	if err != nil {
 		return err
 	}
 
 	for _, job := range jobs {
-		if err := enqueueScheduled(job); err != nil {
+		if err := p.enqueueScheduled(job); err != nil {
 			return err
 		}
 	}
@@ -405,7 +589,7 @@ func enqueueReadyScheduledJobs() error {
 	return nil
 }
 
-const DEFAULT_MAX_RETRY_COUNT = 19
+const DefaultMaxRetryCount = 19
 
 // Retry 1: 1 minute
 // Retry 2: 8 minutes - 9 minutes total

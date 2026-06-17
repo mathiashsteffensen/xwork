@@ -30,56 +30,31 @@ type JobDefinition struct {
 	Name    string
 	Queue   string
 	Handler JobHandler
+
+	/* Internal */
+	processor *Processor
 }
 
-type JobDefinitions map[string]JobDefinition
+type JobDefinitions map[string]*JobDefinition
 
-var jobDefinitions = make(JobDefinitions)
-
-func (defs JobDefinitions) set(queue, name string, definition JobDefinition) {
-	defs[queue+":"+name] = definition
+func (defs JobDefinitions) set(name string, definition *JobDefinition) {
+	defs[name] = definition
 }
 
-func (defs JobDefinitions) get(queue, name string) JobDefinition {
-	return defs[queue+":"+name]
-}
-
-func DefineJob(queue string, name string, handler JobHandler) JobDefinition {
-	def := JobDefinition{
-		Name:    name,
-		Handler: handler,
-		Queue:   queue,
-	}
-
-	jobDefinitions.set(queue, name, def)
-
-	return def
+func (defs JobDefinitions) get(name string) *JobDefinition {
+	return defs[name]
 }
 
 func (def JobDefinition) Enqueue(payload JobPayload) error {
-	return def.EnqueueAt(time.Now(), payload)
+	return def.processor.Enqueue(def.Name, payload)
 }
 
 func (def JobDefinition) EnqueueIn(duration time.Duration, payload JobPayload) error {
-	return def.EnqueueAt(time.Now().Add(duration), payload)
+	return def.processor.EnqueueIn(def.Name, duration, payload)
 }
 
 func (def JobDefinition) EnqueueAt(enqueueAt time.Time, payload JobPayload) error {
-	id, err := uuid.NewV4()
-	if err != nil {
-		return err
-	}
-
-	logger.Infof("Enqueueing job '%s:%s' at %s", def.Queue, def.Name, enqueueAt)
-
-	return enqueue(&ScheduledJob{
-		ID:          id,
-		Name:        def.Name,
-		Queue:       def.Queue,
-		EnqueueAt:   enqueueAt,
-		ScheduledAt: time.Now(),
-		Payload:     payload,
-	})
+	return def.processor.EnqueueAt(def.Name, enqueueAt, payload)
 }
 
 type ScheduledJob struct {
