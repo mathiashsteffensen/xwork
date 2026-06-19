@@ -1,4 +1,4 @@
-package storage_adapters
+package storage
 
 import (
 	"database/sql"
@@ -16,21 +16,21 @@ type QueryObject interface {
 	QueryRow(query string, args ...interface{}) *sql.Row
 }
 
-type SQLStorageAdapter struct {
+type SQL struct {
 	db *sql.DB
 	q  QueryObject
 }
 
-func NewSQLStorageAdapter(db *sql.DB) SQLStorageAdapter {
-	return newSQLStorageAdapter(db, db)
+func NewSQL(db *sql.DB) SQL {
+	return newSQL(db, db)
 }
 
-func newSQLStorageAdapter(db *sql.DB, q QueryObject) SQLStorageAdapter {
-	return SQLStorageAdapter{db: db, q: q}
+func newSQL(db *sql.DB, q QueryObject) SQL {
+	return SQL{db: db, q: q}
 
 }
 
-func (s SQLStorageAdapter) Initialize() error {
+func (s SQL) Initialize() error {
 	_, err := s.db.Exec(
 		`CREATE TABLE IF NOT EXISTS xwork_schedule (
 				id UUID PRIMARY KEY,
@@ -532,13 +532,13 @@ func count(db QueryObject, jobType xwork.JobType) (int64, error) {
 	return count, nil
 }
 
-func (s SQLStorageAdapter) Transact(f func(adapter xwork.StorageAdapter) error) error {
+func (s SQL) Transact(f func(adapter xwork.StorageAdapter) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 
-	err = f(newSQLStorageAdapter(s.db, tx))
+	err = f(newSQL(s.db, tx))
 
 	if err != nil {
 		return errors.Join(err, tx.Rollback())
@@ -547,82 +547,82 @@ func (s SQLStorageAdapter) Transact(f func(adapter xwork.StorageAdapter) error) 
 	return tx.Commit()
 }
 
-func (s SQLStorageAdapter) InsertToScheduled(job *xwork.ScheduledJob) error {
+func (s SQL) InsertToScheduled(job *xwork.ScheduledJob) error {
 	return insertToScheduled(s.q, job)
 }
 
-func (s SQLStorageAdapter) NextFromScheduled() ([]*xwork.ScheduledJob, error) {
+func (s SQL) NextFromScheduled() ([]*xwork.ScheduledJob, error) {
 	return nextFromScheduled(s.q)
 }
 
-func (s SQLStorageAdapter) DeleteFromScheduled(id uuid.UUID) error {
+func (s SQL) DeleteFromScheduled(id uuid.UUID) error {
 	return deleteFromScheduled(s.q, id)
 }
 
-func (s SQLStorageAdapter) ListScheduled(limit, offset uint) ([]*xwork.ScheduledJob, error) {
+func (s SQL) ListScheduled(limit, offset uint) ([]*xwork.ScheduledJob, error) {
 	return listScheduled(s.q, limit, offset)
 }
 
-func (s SQLStorageAdapter) InsertToQueue(job *xwork.EnqueuedJob) error {
+func (s SQL) InsertToQueue(job *xwork.EnqueuedJob) error {
 	return insertToQueue(s.q, job)
 }
 
-func (s SQLStorageAdapter) GetFromQueue(queue string) (*xwork.EnqueuedJob, error) {
+func (s SQL) GetFromQueue(queue string) (*xwork.EnqueuedJob, error) {
 	return getFromQueue(s.q, queue)
 }
 
-func (s SQLStorageAdapter) DeleteFromQueue(id uuid.UUID) error {
+func (s SQL) DeleteFromQueue(id uuid.UUID) error {
 	return deleteFromQueue(s.q, id)
 }
 
-func (s SQLStorageAdapter) ListEnqueued(queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {
+func (s SQL) ListEnqueued(queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {
 	return listEnqueued(s.q, queue, limit, offset)
 }
 
-func (s SQLStorageAdapter) InsertToProcessing(job *xwork.ProcessingJob) error {
+func (s SQL) InsertToProcessing(job *xwork.ProcessingJob) error {
 	return insertToProcessing(s.q, job)
 }
 
-func (s SQLStorageAdapter) EmitHeartbeat(job *xwork.ProcessingJob) error {
+func (s SQL) EmitHeartbeat(job *xwork.ProcessingJob) error {
 	return emitHeartbeat(s.q, job)
 }
 
-func (s SQLStorageAdapter) GetByLastHeartbeatBefore(timestamp time.Time) ([]*xwork.ProcessingJob, error) {
+func (s SQL) GetByLastHeartbeatBefore(timestamp time.Time) ([]*xwork.ProcessingJob, error) {
 	return getByLastHeartbeatBefore(s.q, timestamp)
 }
 
-func (s SQLStorageAdapter) DeleteFromProcessing(id uuid.UUID) error {
+func (s SQL) DeleteFromProcessing(id uuid.UUID) error {
 	return deleteFromProcessing(s.q, id)
 }
 
-func (s SQLStorageAdapter) ListProcessing(limit, offset uint) ([]*xwork.ProcessingJob, error) {
+func (s SQL) ListProcessing(limit, offset uint) ([]*xwork.ProcessingJob, error) {
 	return listProcessing(s.q, limit, offset)
 }
 
-func (s SQLStorageAdapter) InsertToProcessed(job *xwork.ProcessedJob) error {
+func (s SQL) InsertToProcessed(job *xwork.ProcessedJob) error {
 	return insertToProcessed(s.q, job)
 }
 
-func (s SQLStorageAdapter) ListProcessed(limit, offset uint) ([]*xwork.ProcessedJob, error) {
+func (s SQL) ListProcessed(limit, offset uint) ([]*xwork.ProcessedJob, error) {
 	return listProcessed(s.q, limit, offset)
 }
 
-func (s SQLStorageAdapter) InsertToFailed(job *xwork.FailedJob) error {
+func (s SQL) InsertToFailed(job *xwork.FailedJob) error {
 	return insertToFailed(s.q, job)
 }
 
-func (s SQLStorageAdapter) NextFromFailed() ([]*xwork.FailedJob, error) {
+func (s SQL) NextFromFailed() ([]*xwork.FailedJob, error) {
 	return nextFromFailed(s.q)
 }
 
-func (s SQLStorageAdapter) DeleteFromFailed(id uuid.UUID) error {
+func (s SQL) DeleteFromFailed(id uuid.UUID) error {
 	return deleteFromFailed(s.q, id)
 }
 
-func (s SQLStorageAdapter) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
+func (s SQL) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
 	return listFailed(s.q, limit, offset)
 }
 
-func (s SQLStorageAdapter) Count(jobType xwork.JobType) (int64, error) {
+func (s SQL) Count(jobType xwork.JobType) (int64, error) {
 	return count(s.q, jobType)
 }

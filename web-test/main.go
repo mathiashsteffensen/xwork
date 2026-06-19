@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/mathiashsteffensen/xwork"
-	"github.com/mathiashsteffensen/xwork/storage-adapters"
+	"github.com/mathiashsteffensen/xwork/storage"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 )
@@ -19,7 +19,7 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	storageAdapter := storage_adapters.NewSQLStorageAdapter(db)
+	storageAdapter := storage.NewSQL(db)
 	processor, err := xwork.NewProcessor(storageAdapter)
 	if err != nil {
 		logger.Fatal(err)
