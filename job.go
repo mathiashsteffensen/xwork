@@ -25,7 +25,7 @@ func (p *JobPayload) Scan(src interface{}) error {
 }
 
 // Bind converts a job payload into a typed value using JSON tags.
-func Bind[TPayload any](payload *JobPayload) (TPayload, error) {
+func Bind[TPayload any](payload JobPayload) (TPayload, error) {
 	var val TPayload
 
 	jsonBytes, err := json.Marshal(payload)
