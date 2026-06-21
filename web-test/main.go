@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mathiashsteffensen/xwork"
-	"github.com/mathiashsteffensen/xwork/storage"
+	"github.com/mathiashsteffensen/xwork/v2"
+	"github.com/mathiashsteffensen/xwork/v2/storage"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 )

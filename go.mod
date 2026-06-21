@@ -1,4 +1,4 @@
-module github.com/mathiashsteffensen/xwork
+module github.com/mathiashsteffensen/xwork/v2
 
 go 1.26.3
 

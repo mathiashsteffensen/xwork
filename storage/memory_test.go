@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/mathiashsteffensen/xwork"
+	"github.com/mathiashsteffensen/xwork/v2"
 )
 
 func TestMemoryGetFromQueueReturnsOldestJobForQueue(t *testing.T) {

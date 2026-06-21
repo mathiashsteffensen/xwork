@@ -11,7 +11,7 @@ xwork gives you a `Processor`, named jobs, queues, scheduled enqueueing, retries
 ## Install
 
 ```sh
-go get github.com/mathiashsteffensen/xwork
+go get github.com/mathiashsteffensen/xwork/v2
 ```
 
 Use Go 1.26 or newer.
@@ -26,8 +26,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/mathiashsteffensen/xwork"
-	"github.com/mathiashsteffensen/xwork/storage"
+	"github.com/mathiashsteffensen/xwork/v2"
+	"github.com/mathiashsteffensen/xwork/v2/storage"
 	_ "github.com/mattn/go-sqlite3"
 )
 
