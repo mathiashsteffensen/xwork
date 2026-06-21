@@ -6,7 +6,7 @@
 
 Minimal background jobs for Go.
 
-xwork gives you a `Processor`, named jobs, queues, scheduled enqueueing, retries, heartbeats, graceful shutdown, and a `database/sql` storage adapter.
+xwork gives you a `Processor`, named jobs, queues, scheduled enqueueing, retries, heartbeats, graceful shutdown, and SQL or in-memory storage adapters.
 
 ## Install
 
@@ -258,12 +258,18 @@ processor.Process("emails", "billing")
 
 ## Storage
 
-The bundled adapter is `storage.NewSQL(db)`. It implements `xwork.StorageAdapter` and uses these tables:
+The bundled persistent adapter is `storage.NewSQL(db)`. It implements `xwork.StorageAdapter` and uses these tables:
 
 - `xwork_schedule`
 - `xwork_queue`
 - `xwork_processing`
 - `xwork_processed`
 - `xwork_failed`
+
+For tests and local-only workers, use the in-memory adapter:
+
+```go
+processor, err := xwork.NewProcessor(storage.NewMemory())
+```
 
 Custom storage backends can implement `xwork.StorageAdapter`. If a backend also implements `Initialize() error`, xwork calls it from `NewProcessor`.

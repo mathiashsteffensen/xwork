@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -34,9 +35,20 @@ func (p *Processor) ServeMux() (*http.ServeMux, error) {
 		count, err := p.storage.Count(JobType(jobType))
 		if err != nil {
 			p.writeJsonError(w, err, http.StatusBadRequest)
+			return
 		}
 
 		p.writeJsonData(w, count)
+	}))
+
+	mux.Handle("GET /api/jobs/{jobType}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jobs, err := p.listJobs(r)
+		if err != nil {
+			p.writeJsonError(w, err, http.StatusBadRequest)
+			return
+		}
+
+		p.writeJsonData(w, jobs)
 	}))
 
 	fileServer := http.FileServerFS(subFs)
@@ -117,6 +129,45 @@ func (p *Processor) writeJsonData(w http.ResponseWriter, data any) {
 	}
 }
 
+func (p *Processor) listJobs(r *http.Request) (any, error) {
+	limit := parseUintQuery(r, "limit", 25)
+	offset := parseUintQuery(r, "offset", 0)
+
+	switch JobType(r.PathValue("jobType")) {
+	case JobTypeScheduled:
+		return p.storage.ListScheduled(limit, offset)
+	case JobTypeEnqueued:
+		queue := r.URL.Query().Get("queue")
+		if queue == "" {
+			queue = "default"
+		}
+
+		return p.storage.ListEnqueued(queue, limit, offset)
+	case JobTypeProcessing:
+		return p.storage.ListProcessing(limit, offset)
+	case JobTypeProcessed:
+		return p.storage.ListProcessed(limit, offset)
+	case JobTypeFailed:
+		return p.storage.ListFailed(limit, offset)
+	default:
+		return nil, fmt.Errorf("unsupported job type %q", r.PathValue("jobType"))
+	}
+}
+
+func parseUintQuery(r *http.Request, key string, fallback uint) uint {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return fallback
+	}
+
+	return uint(parsed)
+}
+
 func (p *Processor) writeJsonError(w http.ResponseWriter, originalErr error, code int) {
 	err := p.doWriteJson(w, map[string]any{"error": originalErr.Error()}, code)
 	if err != nil {
@@ -133,8 +184,8 @@ func (p *Processor) doWriteJson(w http.ResponseWriter, data any, code int) error
 		return err
 	}
 
-	w.WriteHeader(code)
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_, err = w.Write(jsonBytes)
 	if err != nil {
 		return err

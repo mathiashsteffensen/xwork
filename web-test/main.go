@@ -27,7 +27,7 @@ func main() {
 
 	logger.SetLevel(logrus.InfoLevel)
 	processor.SetLogger(logger)
-	processor.SetConcurrency(2)
+	processor.SetConcurrency(20)
 	processor.SetKillTimeout(5 * time.Second)
 
 	processSomeJobs(processor)
@@ -40,9 +40,9 @@ func processSomeJobs(processor *xwork.Processor) {
 	shortRecurringJob := processor.DefineJob("default", "short_job", func(job *xwork.ProcessingJob) error {
 		time.Sleep(30 * time.Second)
 
-		return processor.Enqueue("short_job", xwork.JobPayload{})
+		return processor.EnqueueIn("short_job", 2*time.Minute, xwork.JobPayload{})
 	})
-	err := shortRecurringJob.Enqueue(xwork.JobPayload{})
+	err := shortRecurringJob.EnqueueIn(5*time.Second, xwork.JobPayload{})
 	if err != nil {
 		logger.Fatal(err)
 	}
