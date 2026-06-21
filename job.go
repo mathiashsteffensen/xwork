@@ -24,6 +24,18 @@ func (p *JobPayload) Scan(src interface{}) error {
 	return json.Unmarshal(source, p)
 }
 
+// Bind converts a job payload into a typed value using JSON tags.
+func Bind[TPayload any](payload *JobPayload) (TPayload, error) {
+	var val TPayload
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return val, err
+	}
+	err = json.Unmarshal(jsonBytes, &val)
+	return val, err
+}
+
 type JobHandler = func(job *ProcessingJob) error
 
 type JobDefinition struct {

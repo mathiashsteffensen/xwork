@@ -105,6 +105,28 @@ resizeImage := processor.DefineJob("media", "resize_image", func(job *xwork.Job)
 
 Handlers receive a `*xwork.Job`, also exported as `*xwork.ProcessingJob`. Return `nil` when the job succeeds. Return an error to fail the attempt and schedule a retry.
 
+### Bind Payloads
+
+Use `Bind` when you want a typed payload instead of reading values from `JobPayload` directly.
+
+```go
+type ResizeImagePayload struct {
+	ImageID string `json:"image_id"`
+	Size    string `json:"size"`
+}
+
+resizeImage := processor.DefineJob("media", "resize_image", func(job *xwork.Job) error {
+	payload, err := xwork.Bind[ResizeImagePayload](&job.Payload)
+	if err != nil {
+		return err
+	}
+
+	return resize(payload.ImageID, payload.Size)
+})
+```
+
+`Bind` converts through JSON, so it honors struct `json` tags. Return the error from the handler to fail the attempt and use the normal retry flow when the payload cannot be bound.
+
 ### Enqueue Jobs
 
 Use the returned job definition when the producer and consumer share setup code:
