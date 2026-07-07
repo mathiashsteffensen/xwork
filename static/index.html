@@ -2,17 +2,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/vendor/bootstrap-5.3.8/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/index.css">
-    <script defer src="/vendor/bootstrap-5.3.8/js/bootstrap.bundle.min.js"></script>
-    <script defer src="/index.js"></script>
+    <link rel="stylesheet" href="vendor/bootstrap-5.3.8/css/bootstrap.min.css">
+    <link rel="stylesheet" href="index.css">
+    <script defer src="vendor/bootstrap-5.3.8/js/bootstrap.bundle.min.js"></script>
+    <script defer src="index.js"></script>
     <title>XWork Web UI</title>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg app-navbar">
         <div class="container">
-            <a class="navbar-brand" href="/">
-                <img src="/images/logo-small.png" alt="" width="28" height="28">
+            <a class="navbar-brand" href=".">
+                <img src="images/logo-small.png" alt="" width="28" height="28">
                 <span>xwork</span>
             </a>
             <button
@@ -29,13 +29,13 @@
             <div class="collapse navbar-collapse" id="navbarSupportedContent">
                 <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
                     <li class="nav-item">
-                        <a class="nav-link" href="/?jobType=processing">Processing</a>
+                        <a class="nav-link" href="?jobType=processing">Processing</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/?jobType=enqueued">Enqueued</a>
+                        <a class="nav-link" href="?jobType=enqueued">Enqueued</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/?jobType=failed">Failed</a>
+                        <a class="nav-link" href="?jobType=failed">Failed</a>
                     </li>
                 </ul>
             </div>
@@ -49,8 +49,8 @@
                     Track queued, running, completed, scheduled, and failed jobs from one quiet control surface.
                 </h3>
                 <div class="hero-actions">
-                    <a class="btn btn-dark" href="/?jobType=processing">View processing</a>
-                    <a class="btn btn-outline-dark" href="/?jobType=failed">Inspect failures</a>
+                    <a class="btn btn-dark" href="?jobType=processing">View processing</a>
+                    <a class="btn btn-outline-dark" href="?jobType=failed">Inspect failures</a>
                 </div>
             </div>
             <aside class="status-panel" aria-label="Current job state">
@@ -89,11 +89,11 @@
                 <h2>Focus by state</h2>
             </div>
             <div class="queue-tabs">
-                <a href="/?jobType=processing" data-job-filter="processing">Processing</a>
-                <a href="/?jobType=enqueued" data-job-filter="enqueued">Enqueued</a>
-                <a href="/?jobType=scheduled" data-job-filter="scheduled">Scheduled</a>
-                <a href="/?jobType=processed" data-job-filter="processed">Processed</a>
-                <a href="/?jobType=failed" data-job-filter="failed">Failed</a>
+                <a href="?jobType=processing" data-job-filter="processing">Processing</a>
+                <a href="?jobType=enqueued" data-job-filter="enqueued">Enqueued</a>
+                <a href="?jobType=scheduled" data-job-filter="scheduled">Scheduled</a>
+                <a href="?jobType=processed" data-job-filter="processed">Processed</a>
+                <a href="?jobType=failed" data-job-filter="failed">Failed</a>
             </div>
         </section>
 

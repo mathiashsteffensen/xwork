@@ -93,7 +93,7 @@ const updateCount = async (jobType) => {
     const value = card.querySelector(".metric-value")
 
     try {
-        const res = await fetch(`/api/count/${jobType}`)
+        const res = await fetch(`api/count/${jobType}`)
         if (!res.ok) {
             throw new Error(`failed to fetch ${jobType} count`)
         }
@@ -128,7 +128,7 @@ const refreshJobs = async (jobType) => {
             params.set("queue", queue)
         }
 
-        const res = await fetch(`/api/jobs/${jobType}?${params}`)
+        const res = await fetch(`api/jobs/${jobType}?${params}`)
         if (!res.ok) {
             throw new Error(`failed to fetch ${jobType} jobs`)
         }
