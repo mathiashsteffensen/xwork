@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/mathiashsteffensen/xwork/v2"
@@ -32,8 +33,8 @@ func main() {
 
 	processSomeJobs(processor)
 
-	go processor.Serve()
-	processor.Process()
+	go processor.Process()
+	processor.Serve()
 }
 
 func processSomeJobs(processor *xwork.Processor) {
@@ -58,6 +59,10 @@ func processSomeJobs(processor *xwork.Processor) {
 
 	failingJob := processor.DefineJob("default", "failing_job", func(job *xwork.Job) error {
 		time.Sleep(5 * time.Second)
+
+		var reader io.Reader
+
+		reader.Read([]byte{})
 
 		return errors.New("something bad happened")
 	})

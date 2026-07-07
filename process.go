@@ -1,10 +1,12 @@
 package xwork
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -349,8 +351,9 @@ func (p *Processor) processJob(job *Job) {
 
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
 			l.WithField("panic", r).Error("PANIC")
-			err := p.fail(job, fmt.Errorf("panic: %v", r))
+			err := p.failWithStack(job, fmt.Errorf("panic: %v", r), stack)
 			if err != nil {
 				l.WithError(err).Error("failed to send job to failed queue")
 			}
@@ -485,6 +488,10 @@ func (p *Processor) requeue(job *Job) error {
 }
 
 func (p *Processor) fail(job *Job, jobErr error) error {
+	return p.failWithStack(job, jobErr, nil)
+}
+
+func (p *Processor) failWithStack(job *Job, jobErr error, stack []byte) error {
 	return p.storage.Transact(func(storage StorageAdapter) error {
 		err := storage.DeleteFromProcessing(job.ID)
 		if err != nil {
@@ -507,18 +514,82 @@ func (p *Processor) fail(job *Job, jobErr error) error {
 
 		now := time.Now()
 
+		jobErrData := map[string]any{"message": jobErr.Error()}
+		if stacktrace := cleanStackTrace(stack); stacktrace != "" {
+			jobErrData["stacktrace"] = stacktrace
+		}
+
+		jobErrJson, err := json.Marshal(jobErrData)
+		if err != nil {
+			jobErrJson = []byte(fmt.Sprintf(`{"message":"%s"}`, jobErr.Error()))
+			err = nil
+		}
+
 		return storage.InsertToFailed(&FailedJob{
 			ID:          job.ID,
 			Name:        job.Name,
 			Queue:       job.Queue,
 			Payload:     job.Payload,
-			Error:       jobErr.Error(),
+			Error:       string(jobErrJson),
 			LastRetryAt: now,
 			NextRetryAt: now.Add(exponentialBackoff(retryCount)),
 			RetryCount:  retryCount,
 			ScheduledAt: job.ScheduledAt,
 		})
 	})
+}
+
+func cleanStackTrace(stack []byte) string {
+	if len(stack) == 0 {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimRight(string(stack), "\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+
+	filtered := []string{lines[0]}
+	for i := 1; i < len(lines); i += 2 {
+		funcLine := lines[i]
+		fileLine := ""
+		if i+1 < len(lines) {
+			fileLine = lines[i+1]
+		}
+
+		if isLibraryStackFrame(funcLine) {
+			continue
+		}
+
+		filtered = append(filtered, funcLine)
+		if fileLine != "" {
+			filtered = append(filtered, fileLine)
+		}
+	}
+
+	if len(filtered) == 1 {
+		return ""
+	}
+
+	return strings.Join(filtered, "\n")
+}
+
+func isLibraryStackFrame(funcLine string) bool {
+	libraryPrefixes := []string{
+		"runtime/debug.Stack",
+		"panic(",
+		"github.com/mathiashsteffensen/xwork/v2.(*Processor).",
+		"github.com/alitto/pond.",
+		"runtime.goexit",
+	}
+
+	for _, prefix := range libraryPrefixes {
+		if strings.HasPrefix(funcLine, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (p *Processor) retry(job *FailedJob) error {

@@ -107,16 +107,10 @@ func (p *Processor) Serve() error {
 	}
 
 	go func() {
-		err := server.ListenAndServe()
-		if err != nil {
-			p.logger.Fatal(err)
-			return
-		}
+		p.logger.Infof("Listening on %s", addr)
 	}()
 
-	p.logger.Infof("Listening on %s", addr)
-
-	return nil
+	return server.ListenAndServe()
 }
 
 func (p *Processor) writeJsonData(w http.ResponseWriter, data any) {

@@ -1,4 +1,19 @@
 const JOB_TYPES = ["scheduled", "enqueued", "processing", "processed", "failed"]
+
+const getErrorFormatted = (job) => {
+    try {
+        const obj = JSON.parse(job.error)
+        const message = `Message: ${escapeHtml(obj.message || "-")}`
+        if (!obj.stacktrace) {
+            return message
+        }
+
+        return `${message}<br/>Stacktrace:<br/>${escapeHtml(obj.stacktrace)}`
+    } catch (e) {
+        return `Message: ${escapeHtml(job.error || "-")}`
+    }
+}
+
 const JOB_COLUMNS = {
     scheduled: [
         {label: "Name", value: job => escapeHtml(job.name || "-")},
@@ -27,7 +42,7 @@ const JOB_COLUMNS = {
     failed: [
         {label: "Name", value: job => escapeHtml(job.name || "-")},
         {label: "Queue", value: job => escapeHtml(job.queue || "-"), muted: true},
-        {label: "Error", value: job => escapeHtml(job.error || "-"), className: "error-cell"},
+        {label: "Error", value: job => getErrorFormatted(job), className: "error-cell"},
         {label: "Retries", value: job => job.retryCount || 0},
         {label: "Next retry at", value: job => formatTime(job.nextRetryAt), muted: true},
     ],
