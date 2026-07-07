@@ -283,6 +283,14 @@ tbody tr:last-child td {
     font-weight: 500;
 }
 
+.error-cell {
+    max-width: 420px;
+    color: var(--danger);
+    font-weight: 600;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 820px) {
     .app-shell {
         width: min(100% - 24px, 640px);

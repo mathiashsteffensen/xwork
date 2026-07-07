@@ -27,6 +27,7 @@ const JOB_COLUMNS = {
     failed: [
         {label: "Name", value: job => escapeHtml(job.name || "-")},
         {label: "Queue", value: job => escapeHtml(job.queue || "-"), muted: true},
+        {label: "Error", value: job => escapeHtml(job.error || "-"), className: "error-cell"},
         {label: "Retries", value: job => job.retryCount || 0},
         {label: "Next retry at", value: job => formatTime(job.nextRetryAt), muted: true},
     ],
@@ -162,7 +163,11 @@ const renderJobs = (jobType, jobs) => {
     tableBody.innerHTML = jobs.map(job => `
         <tr>
             ${columns.map(column => {
-                const className = column.muted ? ` class="muted-cell"` : ""
+                const classes = [
+                    column.muted ? "muted-cell" : "",
+                    column.className || "",
+                ].filter(Boolean)
+                const className = classes.length ? ` class="${classes.join(" ")}"` : ""
                 return `<td${className}>${column.value(job)}</td>`
             }).join("")}
         </tr>
