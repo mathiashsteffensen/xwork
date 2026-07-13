@@ -16,6 +16,6 @@ func env(key, fallback string) string {
 
 func newShutdownChannel() chan os.Signal {
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP, os.Interrupt, os.Kill)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP, os.Interrupt)
 	return sigc
 }

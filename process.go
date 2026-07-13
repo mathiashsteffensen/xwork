@@ -8,7 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/alitto/pond"
@@ -39,8 +39,8 @@ type Processor struct {
 	// but we keep them in memory and try to push them back if they don't finish when the process is shutting down
 	processingJobs AtomicMap[*Job]
 
-	quit                 chan struct{}
-	numManagedGoRoutines int32
+	quit         chan struct{}
+	shutdownOnce sync.Once
 }
 
 func NewProcessor(storage StorageAdapter) (*Processor, error) {
@@ -57,11 +57,10 @@ func NewProcessor(storage StorageAdapter) (*Processor, error) {
 		concurrency: DefaultConcurrency,
 		killTimeout: 15 * time.Second,
 
-		registeredQueues:     make([]string, 0),
-		jobDefinitions:       make(JobDefinitions),
-		processingJobs:       NewAtomicMap[*Job](),
-		quit:                 make(chan struct{}),
-		numManagedGoRoutines: 0,
+		registeredQueues: make([]string, 0),
+		jobDefinitions:   make(JobDefinitions),
+		processingJobs:   NewAtomicMap[*Job](),
+		quit:             make(chan struct{}),
 	}, nil
 }
 
@@ -153,11 +152,8 @@ func (p *Processor) Process(queues ...string) {
 	go p.emitHeartbeats()
 	go p.checkForOrphanedJobs()
 
-	atomic.AddInt32(&p.numManagedGoRoutines, 4)
-
 	for _, queue := range queues {
 		go p.processQueue(queue)
-		atomic.AddInt32(&p.numManagedGoRoutines, 1)
 	}
 
 	p.WaitForShutdown()
@@ -171,29 +167,28 @@ func (p *Processor) WaitForShutdown() {
 const RequeueTimeout = time.Second
 
 func (p *Processor) Shutdown(signal os.Signal) {
-	p.logger.WithField("signal", signal).Warn("Shutting down background work processor")
+	p.shutdownOnce.Do(func() {
+		p.logger.WithField("signal", signal).Warn("Shutting down background work processor")
 
-	for i := 0; int32(i) < p.numManagedGoRoutines+1; i++ {
-		// Gracefully shutdown all managed goroutines
-		p.quit <- struct{}{}
-	}
+		// Closing broadcasts shutdown to every managed goroutine without
+		// depending on an exact receiver count.
+		close(p.quit)
 
-	atomic.StoreInt32(&p.numManagedGoRoutines, 0)
+		p.logger.WithField("timeout", p.killTimeout).Info("Allowing jobs to finish processing")
+		p.pool.StopAndWaitFor(p.killTimeout - RequeueTimeout)
 
-	p.logger.WithField("timeout", p.killTimeout).Info("Allowing jobs to finish processing")
-	p.pool.StopAndWaitFor(p.killTimeout - RequeueTimeout)
+		// Try to reschedule jobs that didn't finish processing
+		p.processingJobs.Each(func(_ string, job *Job) {
+			p.logger.Warnf("Attempting to requeue interrupted job %s", job.ID)
 
-	// Try to reschedule jobs that didn't finish processing
-	p.processingJobs.Each(func(_ string, job *Job) {
-		p.logger.Warnf("Attempting to requeue interrupted job %s", job.ID)
+			err := p.requeue(job)
+			if err != nil {
+				p.logger.WithError(err).WithField("id", job.ID).WithField("payload", job.Payload).Error("failed to requeue job")
+			}
+		})
 
-		err := p.requeue(job)
-		if err != nil {
-			p.logger.WithError(err).WithField("id", job.ID).WithField("payload", job.Payload).Error("failed to requeue job")
-		}
+		time.Sleep(RequeueTimeout)
 	})
-
-	time.Sleep(RequeueTimeout)
 }
 
 const PollTickerTimeout = 10 * time.Millisecond
