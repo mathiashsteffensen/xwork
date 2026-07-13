@@ -164,8 +164,6 @@ func (p *Processor) WaitForShutdown() {
 	p.Shutdown(s)
 }
 
-const RequeueTimeout = time.Second
-
 func (p *Processor) Shutdown(signal os.Signal) {
 	p.shutdownOnce.Do(func() {
 		p.logger.WithField("signal", signal).Warn("Shutting down background work processor")
@@ -175,19 +173,7 @@ func (p *Processor) Shutdown(signal os.Signal) {
 		close(p.quit)
 
 		p.logger.WithField("timeout", p.killTimeout).Info("Allowing jobs to finish processing")
-		p.pool.StopAndWaitFor(p.killTimeout - RequeueTimeout)
-
-		// Try to reschedule jobs that didn't finish processing
-		p.processingJobs.Each(func(_ string, job *Job) {
-			p.logger.Warnf("Attempting to requeue interrupted job %s", job.ID)
-
-			err := p.requeue(job)
-			if err != nil {
-				p.logger.WithError(err).WithField("id", job.ID).WithField("payload", job.Payload).Error("failed to requeue job")
-			}
-		})
-
-		time.Sleep(RequeueTimeout)
+		p.pool.StopAndWaitFor(p.killTimeout)
 	})
 }
 
