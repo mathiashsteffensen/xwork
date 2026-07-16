@@ -604,7 +604,7 @@ func (p *Processor) retry(job *FailedJob) error {
 			}
 		}
 
-		return storage.InsertToQueue(&EnqueuedJob{
+		enqueuedJob := &EnqueuedJob{
 			ID:          failedJob.ID,
 			Name:        failedJob.Name,
 			Queue:       failedJob.Queue,
@@ -612,7 +612,15 @@ func (p *Processor) retry(job *FailedJob) error {
 			RetryCount:  failedJob.RetryCount,
 			EnqueuedAt:  time.Now(),
 			ScheduledAt: failedJob.ScheduledAt,
-		})
+		}
+
+		err := storage.InsertToQueue(enqueuedJob)
+		if errors.Is(err, ErrAlreadyEnqueued) {
+			// The queued copy is already on its way to a worker. Commit the
+			// failed-job claim without replacing it.
+			return nil
+		}
+		return err
 	})
 }
 

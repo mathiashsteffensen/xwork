@@ -105,6 +105,28 @@ func TestAutomaticRetryUsesAtomicClaim(t *testing.T) {
 	}
 }
 
+func TestAutomaticRetryDropsFailedJobAlreadyInQueue(t *testing.T) {
+	id, err := uuid.NewV4()
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := &FailedJob{ID: id, Name: "job", Queue: "default", Payload: JobPayload{}}
+	store := &duplicateQueueStorage{
+		automaticClaimStorage: automaticClaimStorage{claimed: failed},
+	}
+	processor := &Processor{storage: store}
+
+	if err := processor.retry(failed); err != nil {
+		t.Fatal(err)
+	}
+	if store.claimed != nil {
+		t.Fatal("expected failed job to be removed after the claim")
+	}
+	if store.insertCalls != 1 || store.enqueued != nil {
+		t.Fatalf("expected duplicate queue insert to be ignored, calls=%d enqueued=%+v", store.insertCalls, store.enqueued)
+	}
+}
+
 type automaticClaimStorage struct {
 	StorageAdapter
 	claimed     *FailedJob
@@ -132,4 +154,18 @@ func (s *automaticClaimStorage) DeleteFromFailed(uuid.UUID) error {
 func (s *automaticClaimStorage) InsertToQueue(job *EnqueuedJob) error {
 	s.enqueued = job
 	return nil
+}
+
+type duplicateQueueStorage struct {
+	automaticClaimStorage
+	insertCalls int
+}
+
+func (s *duplicateQueueStorage) Transact(f func(StorageAdapter) error) error {
+	return f(s)
+}
+
+func (s *duplicateQueueStorage) InsertToQueue(*EnqueuedJob) error {
+	s.insertCalls++
+	return ErrAlreadyEnqueued
 }

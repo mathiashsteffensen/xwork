@@ -223,3 +223,61 @@ func TestSQLClaimFailedRollsBackWithTransaction(t *testing.T) {
 		t.Fatalf("expected rollback to restore claimed job, got job=%v err=%v", found, err)
 	}
 }
+
+func TestSQLRetryDropsFailedJobAlreadyInQueue(t *testing.T) {
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "xwork.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	store := NewSQL(db)
+	if err := store.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	id := newTestUUID(t)
+	queued := &xwork.EnqueuedJob{
+		ID: id, Name: "queued", Queue: "default", Payload: xwork.JobPayload{"source": "queue"},
+		EnqueuedAt: now, ScheduledAt: now,
+	}
+	failed := &xwork.FailedJob{
+		ID: id, Name: "failed", Queue: "default", Payload: xwork.JobPayload{"source": "failed"},
+		Error: `{}`, LastRetryAt: now, NextRetryAt: now, ScheduledAt: now,
+	}
+	if err := store.InsertToQueue(queued); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertToFailed(failed); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.Transact(func(adapter xwork.StorageAdapter) error {
+		claimed, err := adapter.(xwork.FailedJobClaimer).ClaimFailed(id)
+		if err != nil {
+			return err
+		}
+		retry := &xwork.EnqueuedJob{
+			ID: claimed.ID, Name: claimed.Name, Queue: claimed.Queue, Payload: claimed.Payload,
+			EnqueuedAt: now, ScheduledAt: claimed.ScheduledAt,
+		}
+		err = adapter.InsertToQueue(retry)
+		if errors.Is(err, ErrAlreadyEnqueued) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.GetFailed(id); err != nil || found != nil {
+		t.Fatalf("expected duplicate failed job to be removed, got job=%v err=%v", found, err)
+	}
+	found, err := store.GetFromQueue("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || found.Name != queued.Name || found.Payload["source"] != queued.Payload["source"] {
+		t.Fatalf("expected existing queued job to remain unchanged, got %+v", found)
+	}
+}

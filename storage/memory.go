@@ -143,7 +143,7 @@ func (m *Memory) ListScheduled(limit, offset uint) ([]*xwork.ScheduledJob, error
 func (m *Memory) InsertToQueue(job *xwork.EnqueuedJob) error {
 	return m.write(func(s *memoryState) error {
 		if _, ok := s.enqueued[job.ID]; ok {
-			return duplicateJobError
+			return ErrAlreadyEnqueued
 		}
 		s.enqueued[job.ID] = cloneEnqueuedJob(job)
 		return nil

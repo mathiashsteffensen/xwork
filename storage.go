@@ -1,10 +1,14 @@
 package xwork
 
 import (
+	"errors"
 	"time"
 
 	"github.com/gofrs/uuid"
 )
+
+// ErrAlreadyEnqueued is returned when a queue already contains the job ID.
+var ErrAlreadyEnqueued = errors.New("job is already enqueued")
 
 type JobType string
 

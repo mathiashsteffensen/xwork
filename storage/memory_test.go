@@ -50,6 +50,20 @@ func TestMemoryGetFromQueueReturnsOldestJobForQueue(t *testing.T) {
 	}
 }
 
+func TestMemoryInsertToQueueReturnsErrAlreadyEnqueued(t *testing.T) {
+	store := NewMemory()
+	now := time.Now()
+	job := &xwork.EnqueuedJob{
+		ID: newTestUUID(t), Name: "job", Queue: "default", EnqueuedAt: now, ScheduledAt: now,
+	}
+	if err := store.InsertToQueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertToQueue(job); !errors.Is(err, ErrAlreadyEnqueued) {
+		t.Fatalf("expected ErrAlreadyEnqueued, got %v", err)
+	}
+}
+
 func TestMemoryTransactRollsBackOnError(t *testing.T) {
 	store := NewMemory()
 	id := newTestUUID(t)

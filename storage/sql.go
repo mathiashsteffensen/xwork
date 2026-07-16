@@ -234,11 +234,22 @@ func insertToQueue(db QueryObject, job *xwork.EnqueuedJob) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(
-		"INSERT INTO xwork_queue (id, name, queue, payload, retry_count, enqueued_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+	result, err := db.Exec(
+		"INSERT INTO xwork_queue (id, name, queue, payload, retry_count, enqueued_at, scheduled_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING",
 		job.ID, job.Name, job.Queue, payload, job.RetryCount, job.EnqueuedAt, job.ScheduledAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrAlreadyEnqueued
+	}
+	return nil
 }
 
 func getFromQueue(db QueryObject, queue string) (*xwork.EnqueuedJob, error) {
