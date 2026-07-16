@@ -43,6 +43,17 @@ func TestServeMuxWorksBehindPathPrefix(t *testing.T) {
 		}
 	})
 
+	t.Run("serves prefixed third-party assets", func(t *testing.T) {
+		res := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/xwork/third_party/bootstrap-5.3.8/css/bootstrap.min.css", nil)
+
+		mux.ServeHTTP(res, req)
+
+		if res.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d", http.StatusOK, res.Code)
+		}
+	})
+
 	t.Run("uses relative browser URLs", func(t *testing.T) {
 		res := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/xwork/", nil)
