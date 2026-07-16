@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -408,7 +409,7 @@ func listProcessed(db QueryObject, limit, offset uint) ([]*xwork.ProcessedJob, e
 	rows, err := db.Query(
 		`SELECT id, name, queue, payload, started_at, completed_at, enqueued_at, scheduled_at
 			FROM xwork_processed
-			ORDER BY enqueued_at ASC LIMIT $1 OFFSET $2`,
+			ORDER BY completed_at DESC, id ASC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -478,6 +479,44 @@ func deleteFromFailed(db QueryObject, id uuid.UUID) error {
 	return err
 }
 
+func getFailed(db QueryObject, id uuid.UUID) (*xwork.FailedJob, error) {
+	row := db.QueryRow(
+		`SELECT id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at
+			FROM xwork_failed
+			WHERE id = $1`,
+		id,
+	)
+
+	job := &xwork.FailedJob{}
+	err := row.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.Error, &job.LastRetryAt, &job.NextRetryAt, &job.RetryCount, &job.ScheduledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+func claimFailed(db QueryObject, id uuid.UUID) (*xwork.FailedJob, error) {
+	row := db.QueryRow(
+		`DELETE FROM xwork_failed
+			WHERE id = $1
+			RETURNING id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at`,
+		id,
+	)
+
+	job := &xwork.FailedJob{}
+	err := row.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.Error, &job.LastRetryAt, &job.NextRetryAt, &job.RetryCount, &job.ScheduledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
 func listFailed(db QueryObject, limit, offset uint) ([]*xwork.FailedJob, error) {
 	rows, err := db.Query(
 		`SELECT id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at
@@ -503,6 +542,125 @@ func listFailed(db QueryObject, limit, offset uint) ([]*xwork.FailedJob, error) 
 
 	return jobs, nil
 
+}
+
+func listJobs(db QueryObject, jobType xwork.JobType, jobQuery xwork.JobQuery) (any, bool, error) {
+	if jobType == xwork.JobTypeEnqueued && jobQuery.Queue == "" && !jobQuery.AllQueues {
+		jobQuery.Queue = xwork.DefaultQueue
+	}
+
+	var table, columns, orderBy string
+	switch jobType {
+	case xwork.JobTypeScheduled:
+		table = "xwork_schedule"
+		columns = "id, name, queue, payload, enqueue_at, scheduled_at"
+		orderBy = "enqueue_at DESC, id ASC"
+	case xwork.JobTypeEnqueued:
+		table = "xwork_queue"
+		columns = "id, name, queue, payload, retry_count, enqueued_at, scheduled_at"
+		orderBy = "enqueued_at ASC, id ASC"
+	case xwork.JobTypeProcessing:
+		table = "xwork_processing"
+		columns = "id, name, queue, payload, retry_count, started_at, enqueued_at, scheduled_at"
+		orderBy = "enqueued_at DESC, id ASC"
+	case xwork.JobTypeProcessed:
+		table = "xwork_processed"
+		columns = "id, name, queue, payload, started_at, completed_at, enqueued_at, scheduled_at"
+		orderBy = "completed_at DESC, id ASC"
+	case xwork.JobTypeFailed:
+		table = "xwork_failed"
+		columns = "id, name, queue, payload, error, last_retry_at, next_retry_at, retry_count, scheduled_at"
+		orderBy = "next_retry_at DESC, id ASC"
+	default:
+		return nil, false, errors.New("unknown job type")
+	}
+
+	args := make([]interface{}, 0, 4)
+	conditions := make([]string, 0, 2)
+	if jobQuery.Queue != "" {
+		args = append(args, jobQuery.Queue)
+		conditions = append(conditions, fmt.Sprintf("queue = $%d", len(args)))
+	}
+	if query := strings.ToLower(strings.TrimSpace(jobQuery.Query)); query != "" {
+		query = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+		args = append(args, "%"+query+"%")
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, fmt.Sprintf("(LOWER(name) LIKE %s ESCAPE '\\' OR LOWER(CAST(id AS TEXT)) LIKE %s ESCAPE '\\')", placeholder, placeholder))
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", columns, table)
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY " + orderBy
+
+	limit := normalizeJobQueryLimit(jobQuery.Limit)
+	args = append(args, limit+1)
+	limitPlaceholder := fmt.Sprintf("$%d", len(args))
+	args = append(args, jobQuery.Offset)
+	offsetPlaceholder := fmt.Sprintf("$%d", len(args))
+	query += fmt.Sprintf(" LIMIT %s OFFSET %s", limitPlaceholder, offsetPlaceholder)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	switch jobType {
+	case xwork.JobTypeScheduled:
+		return collectJobRows(rows, limit, func(rows *sql.Rows) (*xwork.ScheduledJob, error) {
+			job := &xwork.ScheduledJob{}
+			err := rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.EnqueueAt, &job.ScheduledAt)
+			return job, err
+		})
+	case xwork.JobTypeEnqueued:
+		return collectJobRows(rows, limit, func(rows *sql.Rows) (*xwork.EnqueuedJob, error) {
+			job := &xwork.EnqueuedJob{}
+			err := rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.EnqueuedAt, &job.ScheduledAt)
+			return job, err
+		})
+	case xwork.JobTypeProcessing:
+		return collectJobRows(rows, limit, func(rows *sql.Rows) (*xwork.ProcessingJob, error) {
+			job := &xwork.ProcessingJob{}
+			err := rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.StartedAt, &job.EnqueuedAt, &job.ScheduledAt)
+			return job, err
+		})
+	case xwork.JobTypeProcessed:
+		return collectJobRows(rows, limit, func(rows *sql.Rows) (*xwork.ProcessedJob, error) {
+			job := &xwork.ProcessedJob{}
+			err := rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.StartedAt, &job.CompletedAt, &job.EnqueuedAt, &job.ScheduledAt)
+			return job, err
+		})
+	case xwork.JobTypeFailed:
+		return collectJobRows(rows, limit, func(rows *sql.Rows) (*xwork.FailedJob, error) {
+			job := &xwork.FailedJob{}
+			err := rows.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.Error, &job.LastRetryAt, &job.NextRetryAt, &job.RetryCount, &job.ScheduledAt)
+			return job, err
+		})
+	default:
+		panic("validated job type became invalid")
+	}
+}
+
+func collectJobRows[T any](rows *sql.Rows, limit uint, scan func(*sql.Rows) (T, error)) ([]T, bool, error) {
+	jobs := make([]T, 0, limit+1)
+	for rows.Next() {
+		job, err := scan(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := uint(len(jobs)) > limit
+	if hasMore {
+		jobs = jobs[:limit]
+	}
+	return jobs, hasMore, nil
 }
 
 func count(db QueryObject, jobType xwork.JobType) (int64, error) {
@@ -619,8 +777,20 @@ func (s SQL) DeleteFromFailed(id uuid.UUID) error {
 	return deleteFromFailed(s.q, id)
 }
 
+func (s SQL) GetFailed(id uuid.UUID) (*xwork.FailedJob, error) {
+	return getFailed(s.q, id)
+}
+
+func (s SQL) ClaimFailed(id uuid.UUID) (*xwork.FailedJob, error) {
+	return claimFailed(s.q, id)
+}
+
 func (s SQL) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
 	return listFailed(s.q, limit, offset)
+}
+
+func (s SQL) ListJobs(jobType xwork.JobType, query xwork.JobQuery) (any, bool, error) {
+	return listJobs(s.q, jobType, query)
 }
 
 func (s SQL) Count(jobType xwork.JobType) (int64, error) {

@@ -30,6 +30,7 @@ func main() {
 	processor.SetLogger(logger)
 	processor.SetConcurrency(20)
 	processor.SetKillTimeout(5 * time.Second)
+	processor.SetWebActionsEnabled(true)
 
 	processSomeJobs(processor)
 

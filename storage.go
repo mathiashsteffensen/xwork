@@ -46,6 +46,36 @@ type StorageAdapter interface {
 	Count(jobType JobType) (int64, error)
 }
 
+// JobQuery describes the optional filtering and pagination supported by the
+// web UI. Query matches a job's name or ID, while Queue is an exact match.
+type JobQuery struct {
+	Query string
+	Queue string
+	// AllQueues prevents the web API's legacy default-queue filter for
+	// enqueued jobs when no explicit Queue is provided.
+	AllQueues bool
+	Limit     uint
+	Offset    uint
+}
+
+// JobQueryAdapter lets storage adapters provide richer web UI queries without
+// adding methods to StorageAdapter and breaking existing implementations.
+type JobQueryAdapter interface {
+	ListJobs(jobType JobType, query JobQuery) (jobs any, hasMore bool, err error)
+}
+
+// FailedJobLookup provides an optional failed-job lookup.
+type FailedJobLookup interface {
+	GetFailed(id uuid.UUID) (*FailedJob, error)
+}
+
+// FailedJobClaimer atomically removes and returns a failed job. A nil job
+// means another caller already claimed it. Implementations used inside
+// Transact must expose this interface too.
+type FailedJobClaimer interface {
+	ClaimFailed(id uuid.UUID) (*FailedJob, error)
+}
+
 type Initializer interface {
 	Initialize() error
 }

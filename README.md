@@ -245,6 +245,26 @@ log.Printf("failed jobs: %d", failedCount)
 
 Available states are scheduled, enqueued, processing, processed, and failed.
 
+### Web Dashboard
+
+Run the bundled dashboard alongside the worker:
+
+```go
+go processor.Process()
+
+if err := processor.Serve(); err != nil {
+	log.Fatal(err)
+}
+```
+
+The dashboard is read-only by default. Enable manual failed-job retries only when the dashboard is behind an appropriate network or authentication boundary:
+
+```go
+processor.SetWebActionsEnabled(true)
+```
+
+The dashboard adds anti-framing and same-origin request protections, but does not provide authentication. Bundled SQL and in-memory storage support search, queue filters, pagination, and atomic retry claims. Custom adapters remain compatible and can add the optional `xwork.JobQueryAdapter` and `xwork.FailedJobClaimer` interfaces to expose the same capabilities.
+
 ### Split Producers and Workers
 
 Producers still need to define the job before enqueueing by name, because definitions map names to queues.

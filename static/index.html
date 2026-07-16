@@ -1,3 +1,4 @@
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -9,123 +10,180 @@
     <title>XWork Web UI</title>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg app-navbar">
-        <div class="container">
+    <nav class="app-navbar" aria-label="Application">
+        <div class="app-navbar-inner">
             <a class="navbar-brand" href=".">
                 <img src="images/logo-small.png" alt="" width="28" height="28">
                 <span>xwork</span>
             </a>
-            <button
-                    class="navbar-toggler"
-                    type="button"
-                    data-bs-toggle="collapse"
-                    data-bs-target="#navbarSupportedContent"
-                    aria-controls="navbarSupportedContent"
-                    aria-expanded="false"
-                    aria-label="Toggle navigation"
-            >
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarSupportedContent">
-                <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-                    <li class="nav-item">
-                        <a class="nav-link" href="?jobType=processing">Processing</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="?jobType=enqueued">Enqueued</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="?jobType=failed">Failed</a>
-                    </li>
-                </ul>
+            <div class="navbar-actions">
+                <span class="mode-badge" id="dashboard-mode">Read-only</span>
+                <button class="btn btn-outline-dark btn-sm" id="refresh-button" type="button">
+                    Refresh
+                </button>
             </div>
         </div>
     </nav>
+
     <main class="app-shell">
-        <section class="hero">
-            <div class="hero-copy">
-                <p class="eyebrow">xwork dashboard</p>
-                <h3>
-                    Track queued, running, completed, scheduled, and failed jobs from one quiet control surface.
-                </h3>
-                <div class="hero-actions">
-                    <a class="btn btn-dark" href="?jobType=processing">View processing</a>
-                    <a class="btn btn-outline-dark" href="?jobType=failed">Inspect failures</a>
-                </div>
-            </div>
-            <aside class="status-panel" aria-label="Current job state">
-                <div class="panel-header">
-                    <span>Live overview</span>
-                    <span class="status-dot" aria-hidden="true"></span>
-                </div>
-                <div class="metric-grid" id="metric-grid" aria-live="polite">
-                    <article class="metric-card loading" data-job-type="processing">
-                        <span class="metric-label">Processing</span>
-                        <strong class="metric-value">-</strong>
-                    </article>
-                    <article class="metric-card loading" data-job-type="enqueued">
-                        <span class="metric-label">Enqueued</span>
-                        <strong class="metric-value">-</strong>
-                    </article>
-                    <article class="metric-card loading" data-job-type="scheduled">
-                        <span class="metric-label">Scheduled</span>
-                        <strong class="metric-value">-</strong>
-                    </article>
-                    <article class="metric-card loading" data-job-type="processed">
-                        <span class="metric-label">Processed</span>
-                        <strong class="metric-value">-</strong>
-                    </article>
-                    <article class="metric-card loading" data-job-type="failed">
-                        <span class="metric-label">Failed</span>
-                        <strong class="metric-value">-</strong>
-                    </article>
-                </div>
-            </aside>
-        </section>
-
-        <section class="queue-section" aria-label="Queue states">
+        <header class="dashboard-header">
             <div>
-                <p class="eyebrow">Queues</p>
-                <h2>Focus by state</h2>
+                <p class="eyebrow">xwork dashboard</p>
+                <h1>Jobs</h1>
+                <p class="dashboard-description">Monitor queues, inspect job data, and act on failures.</p>
             </div>
-            <div class="queue-tabs">
-                <a href="?jobType=processing" data-job-filter="processing">Processing</a>
-                <a href="?jobType=enqueued" data-job-filter="enqueued">Enqueued</a>
-                <a href="?jobType=scheduled" data-job-filter="scheduled">Scheduled</a>
-                <a href="?jobType=processed" data-job-filter="processed">Processed</a>
-                <a href="?jobType=failed" data-job-filter="failed">Failed</a>
+            <div class="sync-panel">
+                <div class="sync-status">
+                    <span class="status-dot" id="sync-dot" aria-hidden="true"></span>
+                    <span id="sync-status" aria-hidden="true">Not updated yet</span>
+                </div>
+                <span class="visually-hidden" id="sync-announcement" role="status" aria-live="polite"></span>
+                <label class="auto-refresh-control" for="auto-refresh">
+                    <input id="auto-refresh" type="checkbox" checked>
+                    Auto-refresh every 10s
+                </label>
             </div>
+        </header>
+
+        <section class="overview-section" aria-labelledby="overview-title">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Overview</p>
+                    <h2 id="overview-title">Job states</h2>
+                </div>
+                <p>Choose a state to inspect its jobs.</p>
+            </div>
+            <nav class="metric-grid" aria-label="Job states">
+                <a class="metric-card loading" href="?jobType=processing" data-job-filter="processing">
+                    <span class="metric-label">Processing</span>
+                    <strong class="metric-value">-</strong>
+                    <span class="metric-action">View running jobs</span>
+                </a>
+                <a class="metric-card loading" href="?jobType=enqueued" data-job-filter="enqueued">
+                    <span class="metric-label">Enqueued</span>
+                    <strong class="metric-value">-</strong>
+                    <span class="metric-action">View queued jobs</span>
+                </a>
+                <a class="metric-card loading" href="?jobType=scheduled" data-job-filter="scheduled">
+                    <span class="metric-label">Scheduled</span>
+                    <strong class="metric-value">-</strong>
+                    <span class="metric-action">View upcoming jobs</span>
+                </a>
+                <a class="metric-card loading" href="?jobType=processed" data-job-filter="processed">
+                    <span class="metric-label">Processed</span>
+                    <strong class="metric-value">-</strong>
+                    <span class="metric-action">View completed jobs</span>
+                </a>
+                <a class="metric-card loading" href="?jobType=failed" data-job-filter="failed">
+                    <span class="metric-label">Failed</span>
+                    <strong class="metric-value">-</strong>
+                    <span class="metric-action">Inspect failures</span>
+                </a>
+            </nav>
         </section>
 
-        <section class="jobs-panel">
+        <section class="jobs-panel" aria-labelledby="selected-state-title">
             <div class="jobs-panel-header">
                 <div>
                     <p class="eyebrow">Details</p>
-                    <h2 id="selected-state-title">Processing jobs</h2>
+                    <h2 id="selected-state-title" tabindex="-1">Processing jobs</h2>
                 </div>
-                <label class="queue-filter" for="queue-filter">
-                    Queue
-                    <input id="queue-filter" name="queue" type="text" value="default" autocomplete="off">
-                </label>
+                <span class="result-summary" id="result-summary" aria-live="polite"></span>
             </div>
+
+            <form class="filter-bar" id="job-filters">
+                <label class="filter-control" for="job-search">
+                    Search
+                    <input id="job-search" name="q" type="search" placeholder="Name or job ID" autocomplete="off">
+                </label>
+                <label class="filter-control" for="queue-filter">
+                    Queue
+                    <input id="queue-filter" name="queue" type="text" placeholder="All queues" autocomplete="off">
+                </label>
+                <label class="filter-control page-size-control" for="page-size">
+                    Rows
+                    <select id="page-size" name="limit">
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </label>
+                <div class="filter-actions">
+                    <button class="btn btn-dark" type="submit">Apply</button>
+                    <button class="btn btn-outline-dark" id="clear-filters" type="button">Clear</button>
+                </div>
+            </form>
+            <p class="capability-note" id="query-capability-note" hidden>
+                Search and cross-state queue filters are unavailable for this storage adapter.
+            </p>
+            <div class="inline-alert" id="jobs-alert" role="status" hidden></div>
+
             <div class="table-wrap">
                 <table>
+                    <caption class="visually-hidden" id="jobs-table-caption">Processing jobs</caption>
                     <thead>
                         <tr id="jobs-table-head">
-                            <th>Name</th>
-                            <th>Queue</th>
-                            <th>Retries</th>
-                            <th>Updated</th>
+                            <th scope="col">Name</th>
+                            <th scope="col">Queue</th>
+                            <th scope="col">Started</th>
+                            <th scope="col">Runtime</th>
+                            <th scope="col">Details</th>
                         </tr>
                     </thead>
                     <tbody id="jobs-table-body">
-                        <tr>
-                            <td colspan="4">Loading jobs...</td>
+                        <tr class="message-row">
+                            <td colspan="5">Loading jobs...</td>
                         </tr>
                     </tbody>
                 </table>
             </div>
+
+            <nav class="pagination-bar" aria-label="Jobs pagination">
+                <button class="btn btn-outline-dark" id="previous-page" type="button">Previous</button>
+                <span id="page-summary">Page 1</span>
+                <button class="btn btn-outline-dark" id="next-page" type="button">Next</button>
+            </nav>
         </section>
     </main>
+
+    <aside class="offcanvas offcanvas-end job-details" tabindex="-1" id="job-details" aria-labelledby="job-details-title">
+        <div class="offcanvas-header">
+            <div>
+                <p class="eyebrow">Job details</p>
+                <h2 class="offcanvas-title" id="job-details-title">Job</h2>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+        </div>
+        <div class="offcanvas-body" id="job-details-body"></div>
+        <div class="details-footer" id="job-details-footer">
+            <div class="details-footer-default" id="details-footer-default">
+                <p class="read-only-hint" id="read-only-hint">This dashboard is read-only.</p>
+                <button class="btn btn-danger" id="retry-job-button" type="button" hidden>Retry now</button>
+            </div>
+            <div class="retry-confirmation" id="retry-confirmation" role="group" aria-labelledby="retry-confirmation-title" hidden>
+                <div>
+                    <p class="retry-confirmation-title" id="retry-confirmation-title">Retry failed job?</p>
+                    <p class="modal-note" id="retry-prompt"></p>
+                </div>
+                <div class="retry-confirmation-actions">
+                    <button type="button" class="btn btn-outline-dark" id="cancel-retry">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirm-retry">Retry now</button>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div class="toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true">
+            <div class="toast-header">
+                <strong class="me-auto">xwork</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body">
+                <span id="toast-message"></span>
+                <a class="toast-action" id="toast-action" href="#" hidden></a>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

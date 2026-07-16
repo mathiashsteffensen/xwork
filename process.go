@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alitto/pond"
@@ -38,6 +39,8 @@ type Processor struct {
 	// They are also stored in whatever StorageAdapter is being used,
 	// but we keep them in memory and try to push them back if they don't finish when the process is shutting down
 	processingJobs AtomicMap[*Job]
+	webActions     atomic.Bool
+	webRetryMu     sync.Mutex
 
 	quit         chan struct{}
 	shutdownOnce sync.Once
@@ -74,6 +77,12 @@ func (p *Processor) SetConcurrency(concurrency int) {
 
 func (p *Processor) SetKillTimeout(killTimeout time.Duration) {
 	p.killTimeout = killTimeout
+}
+
+// SetWebActionsEnabled enables state-changing actions in the web UI. Web
+// actions are disabled by default.
+func (p *Processor) SetWebActionsEnabled(enabled bool) {
+	p.webActions.Store(enabled)
 }
 
 func (p *Processor) DefineJob(queue string, name string, handler JobHandler) *JobDefinition {
@@ -178,6 +187,10 @@ func (p *Processor) Shutdown(signal os.Signal) {
 }
 
 const PollTickerTimeout = 10 * time.Millisecond
+
+// RequeueTimeout is kept for compatibility with existing callers and tests.
+const RequeueTimeout = PollTickerTimeout
+
 const HeartbeatTickerTimeout = 3 * time.Second
 
 var ErrOrphanJob = errors.New("orphan job")
@@ -575,19 +588,30 @@ func isLibraryStackFrame(funcLine string) bool {
 
 func (p *Processor) retry(job *FailedJob) error {
 	return p.storage.Transact(func(storage StorageAdapter) error {
-		err := storage.DeleteFromFailed(job.ID)
-		if err != nil {
-			return err
+		failedJob := job
+		if claimer, ok := storage.(FailedJobClaimer); ok {
+			claimed, err := claimer.ClaimFailed(job.ID)
+			if err != nil {
+				return err
+			}
+			if claimed == nil {
+				return nil
+			}
+			failedJob = claimed
+		} else {
+			if err := storage.DeleteFromFailed(job.ID); err != nil {
+				return err
+			}
 		}
 
 		return storage.InsertToQueue(&EnqueuedJob{
-			ID:          job.ID,
-			Name:        job.Name,
-			Queue:       job.Queue,
-			Payload:     job.Payload,
-			RetryCount:  job.RetryCount,
+			ID:          failedJob.ID,
+			Name:        failedJob.Name,
+			Queue:       failedJob.Queue,
+			Payload:     failedJob.Payload,
+			RetryCount:  failedJob.RetryCount,
 			EnqueuedAt:  time.Now(),
-			ScheduledAt: job.ScheduledAt,
+			ScheduledAt: failedJob.ScheduledAt,
 		})
 	})
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -262,7 +263,10 @@ func (m *Memory) ListProcessed(limit, offset uint) ([]*xwork.ProcessedJob, error
 			jobs = append(jobs, cloneProcessedJob(job))
 		}
 		sort.Slice(jobs, func(i, j int) bool {
-			return jobs[i].EnqueuedAt.Before(jobs[j].EnqueuedAt)
+			if jobs[i].CompletedAt.Equal(jobs[j].CompletedAt) {
+				return jobs[i].ID.String() < jobs[j].ID.String()
+			}
+			return jobs[i].CompletedAt.After(jobs[j].CompletedAt)
 		})
 		jobs = paginate(jobs, limit, offset)
 		return nil
@@ -304,6 +308,29 @@ func (m *Memory) DeleteFromFailed(id uuid.UUID) error {
 	})
 }
 
+func (m *Memory) GetFailed(id uuid.UUID) (*xwork.FailedJob, error) {
+	var job *xwork.FailedJob
+	err := m.read(func(s *memoryState) error {
+		if stored, ok := s.failed[id]; ok {
+			job = cloneFailedJob(stored)
+		}
+		return nil
+	})
+	return job, err
+}
+
+func (m *Memory) ClaimFailed(id uuid.UUID) (*xwork.FailedJob, error) {
+	var job *xwork.FailedJob
+	err := m.write(func(s *memoryState) error {
+		if stored, ok := s.failed[id]; ok {
+			job = cloneFailedJob(stored)
+			delete(s.failed, id)
+		}
+		return nil
+	})
+	return job, err
+}
+
 func (m *Memory) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
 	var jobs []*xwork.FailedJob
 	err := m.read(func(s *memoryState) error {
@@ -317,6 +344,128 @@ func (m *Memory) ListFailed(limit, offset uint) ([]*xwork.FailedJob, error) {
 		return nil
 	})
 	return jobs, err
+}
+
+func (m *Memory) ListJobs(jobType xwork.JobType, query xwork.JobQuery) (any, bool, error) {
+	limit := normalizeJobQueryLimit(query.Limit)
+	if jobType == xwork.JobTypeEnqueued && query.Queue == "" && !query.AllQueues {
+		query.Queue = xwork.DefaultQueue
+	}
+
+	switch jobType {
+	case xwork.JobTypeScheduled:
+		jobs := make([]*xwork.ScheduledJob, 0)
+		err := m.read(func(s *memoryState) error {
+			for _, job := range s.scheduled {
+				if matchesJobQuery(query, job.ID, job.Name, job.Queue) {
+					jobs = append(jobs, cloneScheduledJob(job))
+				}
+			}
+			sort.Slice(jobs, func(i, j int) bool {
+				if jobs[i].EnqueueAt.Equal(jobs[j].EnqueueAt) {
+					return jobs[i].ID.String() < jobs[j].ID.String()
+				}
+				return jobs[i].EnqueueAt.After(jobs[j].EnqueueAt)
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		page, hasMore := paginateWithMore(jobs, limit, query.Offset)
+		return page, hasMore, nil
+
+	case xwork.JobTypeEnqueued:
+		jobs := make([]*xwork.EnqueuedJob, 0)
+		err := m.read(func(s *memoryState) error {
+			for _, job := range s.enqueued {
+				if matchesJobQuery(query, job.ID, job.Name, job.Queue) {
+					jobs = append(jobs, cloneEnqueuedJob(job))
+				}
+			}
+			sort.Slice(jobs, func(i, j int) bool {
+				if jobs[i].EnqueuedAt.Equal(jobs[j].EnqueuedAt) {
+					return jobs[i].ID.String() < jobs[j].ID.String()
+				}
+				return jobs[i].EnqueuedAt.Before(jobs[j].EnqueuedAt)
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		page, hasMore := paginateWithMore(jobs, limit, query.Offset)
+		return page, hasMore, nil
+
+	case xwork.JobTypeProcessing:
+		jobs := make([]*xwork.ProcessingJob, 0)
+		err := m.read(func(s *memoryState) error {
+			for _, job := range s.processing {
+				if matchesJobQuery(query, job.ID, job.Name, job.Queue) {
+					jobs = append(jobs, cloneProcessingJob(job))
+				}
+			}
+			sort.Slice(jobs, func(i, j int) bool {
+				if jobs[i].EnqueuedAt.Equal(jobs[j].EnqueuedAt) {
+					return jobs[i].ID.String() < jobs[j].ID.String()
+				}
+				return jobs[i].EnqueuedAt.After(jobs[j].EnqueuedAt)
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		page, hasMore := paginateWithMore(jobs, limit, query.Offset)
+		return page, hasMore, nil
+
+	case xwork.JobTypeProcessed:
+		jobs := make([]*xwork.ProcessedJob, 0)
+		err := m.read(func(s *memoryState) error {
+			for _, job := range s.processed {
+				if matchesJobQuery(query, job.ID, job.Name, job.Queue) {
+					jobs = append(jobs, cloneProcessedJob(job))
+				}
+			}
+			sort.Slice(jobs, func(i, j int) bool {
+				if jobs[i].CompletedAt.Equal(jobs[j].CompletedAt) {
+					return jobs[i].ID.String() < jobs[j].ID.String()
+				}
+				return jobs[i].CompletedAt.After(jobs[j].CompletedAt)
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		page, hasMore := paginateWithMore(jobs, limit, query.Offset)
+		return page, hasMore, nil
+
+	case xwork.JobTypeFailed:
+		jobs := make([]*xwork.FailedJob, 0)
+		err := m.read(func(s *memoryState) error {
+			for _, job := range s.failed {
+				if matchesJobQuery(query, job.ID, job.Name, job.Queue) {
+					jobs = append(jobs, cloneFailedJob(job))
+				}
+			}
+			sort.Slice(jobs, func(i, j int) bool {
+				if jobs[i].NextRetryAt.Equal(jobs[j].NextRetryAt) {
+					return jobs[i].ID.String() < jobs[j].ID.String()
+				}
+				return jobs[i].NextRetryAt.After(jobs[j].NextRetryAt)
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		page, hasMore := paginateWithMore(jobs, limit, query.Offset)
+		return page, hasMore, nil
+
+	default:
+		return nil, false, errors.New("unknown job type")
+	}
 }
 
 func (m *Memory) Count(jobType xwork.JobType) (int64, error) {
@@ -414,4 +563,39 @@ func paginate[T any](items []T, limit, offset uint) []T {
 	}
 
 	return items[start:end]
+}
+
+func normalizeJobQueryLimit(limit uint) uint {
+	if limit == 0 {
+		return 25
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func matchesJobQuery(query xwork.JobQuery, id uuid.UUID, name, queue string) bool {
+	if query.Queue != "" && queue != query.Queue {
+		return false
+	}
+
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	return needle == "" ||
+		strings.Contains(strings.ToLower(name), needle) ||
+		strings.Contains(strings.ToLower(id.String()), needle)
+}
+
+func paginateWithMore[T any](items []T, limit, offset uint) ([]T, bool) {
+	if offset >= uint(len(items)) {
+		return items[:0], false
+	}
+
+	start := int(offset)
+	end := start + int(limit)
+	hasMore := end < len(items)
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end], hasMore
 }
