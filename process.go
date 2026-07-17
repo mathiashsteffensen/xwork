@@ -406,19 +406,12 @@ func (p *Processor) enqueue(job *ScheduledJob) error {
 func (p *Processor) dequeue(queue string) (*ProcessingJob, error) {
 	var job *ProcessingJob
 	err := p.storage.Transact(func(storage StorageAdapter) error {
-		enqueuedJob, err := storage.GetFromQueue(queue)
+		enqueuedJob, err := storage.DeleteFromQueue(queue)
 		if err != nil {
-			p.logger.Debugf("failed to get job from queue %q: %v", queue, err)
 			return err
 		}
-
 		if enqueuedJob == nil {
 			return nil
-		}
-
-		err = storage.DeleteFromQueue(enqueuedJob.ID)
-		if err != nil {
-			return err
 		}
 
 		job = &ProcessingJob{

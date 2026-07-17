@@ -271,12 +271,28 @@ func getFromQueue(db QueryObject, queue string) (*xwork.EnqueuedJob, error) {
 	return job, nil
 }
 
-func deleteFromQueue(db QueryObject, id uuid.UUID) error {
-	_, err := db.Exec(
-		"DELETE FROM xwork_queue WHERE id = $1",
-		id,
+func deleteFromQueue(db QueryObject, queue string) (*xwork.EnqueuedJob, error) {
+	row := db.QueryRow(
+		`DELETE FROM xwork_queue
+			WHERE id = (
+				SELECT id FROM xwork_queue
+				WHERE queue = $1
+				ORDER BY enqueued_at ASC, id ASC
+				LIMIT 1
+			)
+			RETURNING id, name, queue, payload, retry_count, enqueued_at, scheduled_at`,
+		queue,
 	)
-	return err
+
+	job := &xwork.EnqueuedJob{}
+	err := row.Scan(&job.ID, &job.Name, &job.Queue, &job.Payload, &job.RetryCount, &job.EnqueuedAt, &job.ScheduledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 func listEnqueued(db QueryObject, queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {
@@ -740,8 +756,8 @@ func (s SQL) GetFromQueue(queue string) (*xwork.EnqueuedJob, error) {
 	return getFromQueue(s.q, queue)
 }
 
-func (s SQL) DeleteFromQueue(id uuid.UUID) error {
-	return deleteFromQueue(s.q, id)
+func (s SQL) DeleteFromQueue(queue string) (*xwork.EnqueuedJob, error) {
+	return deleteFromQueue(s.q, queue)
 }
 
 func (s SQL) ListEnqueued(queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {

@@ -137,6 +137,79 @@ func TestSQLClaimFailedIsAtomic(t *testing.T) {
 	}
 }
 
+func TestSQLDeleteFromQueueIsAtomic(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "xwork.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(16)
+
+	store := NewSQL(db)
+	if err := store.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	job := &xwork.EnqueuedJob{
+		ID: newTestUUID(t), Name: "job", Queue: "default", Payload: xwork.JobPayload{},
+		EnqueuedAt: time.Now(), ScheduledAt: time.Now(),
+	}
+	if err := store.InsertToQueue(job); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 8
+	type claimResult struct {
+		job *xwork.EnqueuedJob
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan claimResult, callers)
+	for range callers {
+		go func() {
+			<-start
+			var claimed *xwork.EnqueuedJob
+			err := store.Transact(func(adapter xwork.StorageAdapter) error {
+				claimed, err = adapter.DeleteFromQueue("default")
+				if err != nil || claimed == nil {
+					return err
+				}
+				return adapter.InsertToProcessing(&xwork.ProcessingJob{
+					ID: claimed.ID, Name: claimed.Name, Queue: claimed.Queue, Payload: claimed.Payload,
+					StartedAt: time.Now(), EnqueuedAt: claimed.EnqueuedAt, ScheduledAt: claimed.ScheduledAt,
+				})
+			})
+			results <- claimResult{job: claimed, err: err}
+		}()
+	}
+	close(start)
+
+	claimedCount := 0
+	for range callers {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.job != nil {
+			claimedCount++
+		}
+	}
+	if claimedCount != 1 {
+		t.Fatalf("expected exactly one successful claim, got %d", claimedCount)
+	}
+	queued, err := store.Count(xwork.JobTypeEnqueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processing, err := store.Count(xwork.JobTypeProcessing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 || processing != 1 {
+		t.Fatalf("expected one claimed processing job, got queued=%d processing=%d", queued, processing)
+	}
+}
+
 func TestSQLListsMostRecentlyCompletedJobsFirst(t *testing.T) {
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "xwork.db"))
 	if err != nil {

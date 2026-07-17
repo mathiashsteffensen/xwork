@@ -166,11 +166,24 @@ func (m *Memory) GetFromQueue(queue string) (*xwork.EnqueuedJob, error) {
 	return next, err
 }
 
-func (m *Memory) DeleteFromQueue(id uuid.UUID) error {
-	return m.write(func(s *memoryState) error {
-		delete(s.enqueued, id)
+func (m *Memory) DeleteFromQueue(queue string) (*xwork.EnqueuedJob, error) {
+	var claimed *xwork.EnqueuedJob
+	err := m.write(func(s *memoryState) error {
+		for _, job := range s.enqueued {
+			if job.Queue != queue {
+				continue
+			}
+			if claimed == nil || job.EnqueuedAt.Before(claimed.EnqueuedAt) {
+				claimed = job
+			}
+		}
+		if claimed != nil {
+			delete(s.enqueued, claimed.ID)
+			claimed = cloneEnqueuedJob(claimed)
+		}
 		return nil
 	})
+	return claimed, err
 }
 
 func (m *Memory) ListEnqueued(queue string, limit, offset uint) ([]*xwork.EnqueuedJob, error) {

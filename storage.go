@@ -30,7 +30,8 @@ type StorageAdapter interface {
 
 	InsertToQueue(job *EnqueuedJob) error
 	GetFromQueue(queue string) (*EnqueuedJob, error)
-	DeleteFromQueue(id uuid.UUID) error
+	// DeleteFromQueue atomically removes and returns the oldest job in a queue.
+	DeleteFromQueue(queue string) (*EnqueuedJob, error)
 	ListEnqueued(queue string, limit, offset uint) ([]*EnqueuedJob, error)
 
 	InsertToProcessing(job *ProcessingJob) error
